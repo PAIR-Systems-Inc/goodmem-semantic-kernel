@@ -36,26 +36,27 @@ Or from source (note the hyphens, rather than underscores):
 ```bash
 git clone https://github.com/PAIR-Systems-Inc/goodmem-semantic-kernel
 pip install -e goodmem-semantic-kernel
+# alternative methods if facing issues
+# pip install -e ".[dev]"
+# pip install -e .
 ```
 
 ## Configuration
 
 All settings are read from environment variables with the `GOODMEM_` prefix, or passed directly via `GoodMemSettings`.
 
+```bash
+export GOODMEM_API_KEY=your_key_here
+export GOODMEM_BASE_URL=https://your_goodmem_server:8080
+export GOODMEM_VERIFY_SSL=true_or_false
+```
+
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `GOODMEM_API_KEY` | Yes | — | API key for the GoodMem server |
 | `GOODMEM_BASE_URL` | No | `http://localhost:8080` | GoodMem server base URL |
 | `GOODMEM_EMBEDDER_ID` | No | auto-detected | UUID of the embedder to use |
-| `GOODMEM_VERIFY_SSL` | No | `true` | Set to `false` for self-signed certs, set to `true` if you set up GoodMem server with SSL/TLS verification|
-
-```bash
-export GOODMEM_API_KEY=your_key_here
-export GOODMEM_BASE_URL=https://your_goodmem_server:8080
-export GOODMEM_VERIFY_SSL=true
-```
-
----
+| `GOODMEM_VERIFY_SSL` | No | `false` | Set to `false` for self-signed certs, set to `true` if you setup custom TLS certs|
 
 ## Quickstart
 
@@ -164,16 +165,10 @@ async def main():
         await todos.upsert(Note(content="Call the dentist"))
 ```
 
----
-
 ## Running the examples
 
 ```bash
 cd goodmem_semantic_kernel/examples/python
-
-export GOODMEM_API_KEY=your_key_here
-export GOODMEM_BASE_URL=https://localhost:8080
-GOODMEM_VERIFY_SSL=false # only for self-signed certs
 
 # Option A — agent with memory tool (also requires OPENAI_API_KEY)
 OPENAI_API_KEY=your_openai_key_here
@@ -186,11 +181,18 @@ python example_single_collection.py
 python example_store.py
 ```
 
+if you failed to run an example successfully, double check [Configuration](#configuration)
+
+or try running inside a python virtual environment if there is a dependency conflict
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+
 ## Testing
 
 ```bash
-pip install -e ".[dev]"
-
 # Unit tests (no server required)
 pytest tests/unit/
 
@@ -198,7 +200,19 @@ pytest tests/unit/
 GOODMEM_API_KEY=your_key_here pytest -m integration
 ```
 
----
+## Behavior notes
+
+**No local embedding.** Never pass an `embedding_generator` — GoodMem embeds content server-side. The parameter is accepted for interface compatibility and silently ignored.
+
+**Upsert semantics.** GoodMem memories are immutable. If you `upsert` a record with an existing `id`, the connector deletes the old memory and creates a new one.
+
+**`content` is write-only in GoodMem.** The server does not return `originalContent` in search responses. Retrieved text comes from `chunkText` (a chunk of the original), which the connector maps back to your `content` field transparently.
+
+**Score convention.** `relevanceScore` from the GoodMem API is a raw pgvector value where lower means more similar. The connector negates it before returning, so SK's standard convention (higher = more relevant) is preserved.
+
+**Filters not supported.** Passing `filter=` to `search()` raises `VectorStoreOperationNotSupportedException`. Post-filter results in application code if needed.
+
+**Pre-computed vectors not supported.** Passing `vector=` to `search()` raises the same exception. Pass text only.
 
 ## Project structure
 
@@ -216,22 +230,6 @@ goodmem-semantic-kernel/           ← repo root
 ├── examples/              # Runnable examples (Options A, B, C)
 └── pyproject.toml
 ```
-
-## Behavior notes
-
-**No local embedding.** Never pass an `embedding_generator` — GoodMem embeds content server-side. The parameter is accepted for interface compatibility and silently ignored.
-
-**Upsert semantics.** GoodMem memories are immutable. If you `upsert` a record with an existing `id`, the connector deletes the old memory and creates a new one.
-
-**`content` is write-only in GoodMem.** The server does not return `originalContent` in search responses. Retrieved text comes from `chunkText` (a chunk of the original), which the connector maps back to your `content` field transparently.
-
-**Score convention.** `relevanceScore` from the GoodMem API is a raw pgvector value where lower means more similar. The connector negates it before returning, so SK's standard convention (higher = more relevant) is preserved.
-
-**Filters not supported.** Passing `filter=` to `search()` raises `VectorStoreOperationNotSupportedException`. Post-filter results in application code if needed.
-
-**Pre-computed vectors not supported.** Passing `vector=` to `search()` raises the same exception. Pass text only.
-
----
 
 ## API reference
 
