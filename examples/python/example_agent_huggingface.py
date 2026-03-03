@@ -1,12 +1,25 @@
 #!/usr/bin/env python3
-"""Option A example — GoodMem collection wired into a Semantic Kernel agent (OpenAI).
+"""Option A example — GoodMem collection wired into a Semantic Kernel agent (HuggingFace).
 
 The agent has a memory search tool backed by GoodMem.  When the user asks
 a question, the LLM decides whether to call the tool to look up relevant
 memories before composing its answer.
 
-For the Azure OpenAI variant see example_agent_azure.py — the GoodMem
-sections are identical; only the import and service= line differ.
+This is the HuggingFace variant of example_agent.py.  Compare the two files
+side-by-side: everything from the GoodMem import onward is identical — only
+the import and service= line differ.  That is intentional: GoodMem is
+provider-agnostic; swapping the LLM requires changing exactly one line.
+
+NOTE — why this uses OpenAIChatCompletion rather than HuggingFaceTextCompletion:
+    SK's built-in HuggingFace connector (HuggingFaceTextCompletion) runs models
+    locally via the transformers pipeline and implements TextCompletionClientBase,
+    not ChatCompletionClientBase.  ChatCompletionAgent requires a chat interface,
+    so the local connector cannot be used here directly.
+
+    The HuggingFace Inference API (https://api-inference.huggingface.co/v1/) is
+    OpenAI-compatible, so we point OpenAIChatCompletion at it instead.  The model
+    runs on HuggingFace infrastructure; no local GPU is required.  Any model on
+    the Hub that supports the Messages API works.
 
 Requirements (in addition to goodmem-sk):
     pip install semantic-kernel openai
@@ -15,23 +28,25 @@ Environment variables:
     GOODMEM_BASE_URL    — GoodMem server URL  (default: http://localhost:8080)
     GOODMEM_VERIFY_SSL  — Set to 'false' for self-signed certs
     GOODMEM_API_KEY     — GoodMem API key
-    OPENAI_API_KEY      — OpenAI API key
+    HF_TOKEN            — HuggingFace API token (https://huggingface.co/settings/tokens)
+    HF_MODEL            — HuggingFace model ID (default: meta-llama/Llama-3.3-70B-Instruct)
+                          Must support the Messages API (chat/instruction-tuned models).
 
 Usage:
     GOODMEM_BASE_URL=https://localhost:8080 \
     GOODMEM_VERIFY_SSL=false \
     GOODMEM_API_KEY=your-key \
-    OPENAI_API_KEY=sk-... \
-    python example_agent.py
+    HF_TOKEN=hf_... \
+    HF_MODEL=meta-llama/Llama-3.3-70B-Instruct \
+    python example_agent_huggingface.py
 """
 
 import asyncio
 import os
-import re
 from dataclasses import dataclass
 from typing import Annotated
 
-import openai
+from openai import AsyncOpenAI
 
 from semantic_kernel.agents import AgentThread, ChatCompletionAgent
 from semantic_kernel.connectors.ai import FunctionChoiceBehavior
@@ -40,6 +55,10 @@ from semantic_kernel.data.vector import VectorStoreField, vectorstoremodel
 from semantic_kernel.functions import KernelParameterMetadata, KernelPlugin
 
 from goodmem_semantic_kernel import GoodMemCollection
+
+
+_HF_INFERENCE_BASE_URL = "https://api-inference.huggingface.co/v1/"
+_DEFAULT_HF_MODEL = "meta-llama/Llama-3.3-70B-Instruct"
 
 
 # ---------------------------------------------------------------------------
@@ -69,54 +88,23 @@ SEED_MEMORIES = [
 
 
 # ---------------------------------------------------------------------------
-# OpenAI model validation
-# ---------------------------------------------------------------------------
-
-async def _resolve_openai_model(provided: str | None) -> str:
-    """Return a validated OpenAI model ID, prompting the user if needed."""
-    from_arg = provided is not None
-    model = provided or ""
-    while True:
-        if not model:
-            model = input("Enter the OpenAI model to use (e.g. gpt-4o): ").strip()
-
-        _MODEL_REGEX = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9:._/-]*$")
-        if not _MODEL_REGEX.match(model):
-            msg = (
-                f"Invalid model name {model!r}: use only letters, digits, "
-                "hyphens, dots, colons, slashes, or underscores."
-            )
-            if from_arg:
-                raise SystemExit(msg)
-            print(msg)
-            model = ""
-            continue
-
-        try:
-            async with openai.AsyncOpenAI() as client:
-                await client.models.retrieve(model)
-            return model
-        except openai.AuthenticationError:
-            raise SystemExit("OPENAI_API_KEY is invalid or expired.")
-        except (openai.NotFoundError, openai.PermissionDeniedError) as exc:
-            msg = f"Model {model!r} is not available: {exc.message}"
-            if from_arg:
-                raise SystemExit(msg)
-            print(msg)
-            model = ""
-
-
-# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
-async def main(openai_model: str | None = None) -> None:
-    for var in ("GOODMEM_API_KEY", "OPENAI_API_KEY"):
+async def main() -> None:
+    for var in ("GOODMEM_API_KEY", "HF_TOKEN"):
         if not os.environ.get(var):
             raise SystemExit(f"Set {var} before running this script.")
 
-    openai_model = await _resolve_openai_model(openai_model)
-    service = OpenAIChatCompletion(ai_model_id=openai_model)
+    hf_model = os.environ.get("HF_MODEL", _DEFAULT_HF_MODEL)
+
+    # Point OpenAIChatCompletion at HuggingFace's OpenAI-compatible Inference API.
+    # The AsyncOpenAI client is passed in so SK does not try to read OPENAI_API_KEY.
+    hf_client = AsyncOpenAI(
+        base_url=_HF_INFERENCE_BASE_URL,
+        api_key=os.environ["HF_TOKEN"],
+    )
+    service = OpenAIChatCompletion(ai_model_id=hf_model, async_client=hf_client)
 
     async with GoodMemCollection(record_type=Memory, collection_name="agent-memory") as collection:
         # 1. Fresh space with seed data
@@ -178,7 +166,7 @@ async def main(openai_model: str | None = None) -> None:
         )
 
         # 4. Interactive chat loop
-        print("\nMemory agent ready. Type 'exit' to quit.\n")
+        print(f"\nMemory agent ready (model: {hf_model}). Type 'exit' to quit.\n")
         thread: AgentThread | None = None
         while True:
             try:

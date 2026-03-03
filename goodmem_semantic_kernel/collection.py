@@ -481,6 +481,14 @@ class GoodMemCollection(
         Returns:
             A :class:`KernelPlugin` containing a single ``recall`` search function.
         """
+        content_field = next(
+            (f.name for f in self.definition.data_fields if f.name == "content"),
+            next(
+                (f.name for f in self.definition.data_fields if f.type_ == "str"),
+                self.definition.data_fields[0].name if self.definition.data_fields else None,
+            ),
+        )
+
         return KernelPlugin(
             name=name,
             description=description,
@@ -504,7 +512,7 @@ class GoodMemCollection(
                             type_object=int,
                         ),
                     ],
-                    string_mapper=lambda r: r.record.content,
+                    string_mapper=lambda r, _f=content_field: getattr(r.record, _f, "") if _f else "",
                 ),
             ],
         )
