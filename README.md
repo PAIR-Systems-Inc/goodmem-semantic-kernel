@@ -2,13 +2,13 @@
 
 A [GoodMem](https://goodmem.ai) connector for [Microsoft Semantic Kernel](https://github.com/microsoft/semantic-kernel).
 
-Implements SK's `VectorStoreCollection` and `VectorStore` interfaces so agents built on Semantic Kernel can store and retrieve memories from a GoodMem server — no local embedding model required.
-
----
+Implements Semantic Kernel's `VectorStoreCollection` and `VectorStore` interfaces so agents built on Semantic Kernel can store and retrieve memories from a GoodMem server — no local embedding model required.
 
 ## What is GoodMem?
 
-GoodMem is a centralized memory API for LLM agents. It stores text memories as semantic embeddings in PostgreSQL (via `pgvector`) and retrieves them by semantic similarity. Because it runs as a shared service, multiple agents can read and write to the same memory spaces simultaneously.
+GoodMem is a centralized memory API for AI agents and LLMs. The point of GoodMem is so that you can easily and efficiently store and retrieve your data/memories through semantic searching, ai summaries, and context-aware results.
+
+GoodMem stores text memories as semantic embeddings in PostgreSQL (via `pgvector`) and retrieves them by semantic similarity. Because it runs as a shared service, multiple agents can read and write to the same memory spaces simultaneously.
 
 > Embeddings are computed **server-side**, so this connector never needs an `embedding_generator`.
 
@@ -21,13 +21,11 @@ Each **Space** can be configured with embedders and/or chunking strategies. Each
 
 **Embedders** convert your data into a vectorized format. GoodMem supports multiple embedding models & providers.
 
-### End Result
-
-Easily and efficiently retrieve your data/memories through semantic searching, ai summaries, and context-aware results.
-
 ---
 
 ## Installation
+
+**Requirements:** Python 3.10+ and a running GoodMem server.
 
 ```bash
 pip install goodmem_semantic_kernel
@@ -40,10 +38,6 @@ git clone https://github.com/PAIR-Systems-Inc/goodmem-semantic-kernel
 pip install -e goodmem-semantic-kernel
 ```
 
-**Requirements:** Python 3.10+, a running GoodMem server.
-
----
-
 ## Configuration
 
 All settings are read from environment variables with the `GOODMEM_` prefix, or passed directly via `GoodMemSettings`.
@@ -53,12 +47,12 @@ All settings are read from environment variables with the `GOODMEM_` prefix, or 
 | `GOODMEM_API_KEY` | Yes | — | API key for the GoodMem server |
 | `GOODMEM_BASE_URL` | No | `http://localhost:8080` | GoodMem server base URL |
 | `GOODMEM_EMBEDDER_ID` | No | auto-detected | UUID of the embedder to use |
-| `GOODMEM_VERIFY_SSL` | No | `true` | Set to `false` for self-signed certs |
+| `GOODMEM_VERIFY_SSL` | No | `true` | Set to `false` for self-signed certs, set to `true` if you set up GoodMem server with SSL/TLS verification|
 
 ```bash
-export GOODMEM_API_KEY=your-api-key
-export GOODMEM_BASE_URL=https://your-goodmem-server:8080
-export GOODMEM_VERIFY_SSL=false   # only for self-signed certs
+export GOODMEM_API_KEY=your_key_here
+export GOODMEM_BASE_URL=https://your_goodmem_server:8080
+export GOODMEM_VERIFY_SSL=true
 ```
 
 ---
@@ -172,6 +166,73 @@ async def main():
 
 ---
 
+## Running the examples
+
+```bash
+cd goodmem_semantic_kernel/examples/python
+
+export GOODMEM_API_KEY=your_key_here
+export GOODMEM_BASE_URL=https://localhost:8080
+GOODMEM_VERIFY_SSL=false # only for self-signed certs
+
+# Option A — agent with memory tool (also requires OPENAI_API_KEY)
+OPENAI_API_KEY=your_openai_key_here
+python example_agent.py
+
+# Option B — single collection
+python example_single_collection.py
+
+# Option C — store with multiple collections
+python example_store.py
+```
+
+## Testing
+
+```bash
+pip install -e ".[dev]"
+
+# Unit tests (no server required)
+pytest tests/unit/
+
+# Integration tests (requires a live GoodMem server)
+GOODMEM_API_KEY=your_key_here pytest -m integration
+```
+
+---
+
+## Project structure
+
+```
+goodmem-semantic-kernel/           ← repo root
+├── goodmem_semantic_kernel/       ← importable package
+│   ├── __init__.py        # Public exports: GoodMemCollection, GoodMemStore, GoodMemSettings
+│   ├── _client.py         # Async HTTP wrapper around the GoodMem REST API
+│   ├── collection.py      # VectorStoreCollection + VectorSearch implementation
+│   ├── settings.py        # GoodMemSettings (Pydantic, reads GOODMEM_* env vars)
+│   ├── store.py           # VectorStore implementation
+├── tests/
+│   ├── unit/              # Mocked unit tests (no server required)
+│   └── integration/       # Live integration tests (require GoodMem server)
+├── examples/              # Runnable examples (Options A, B, C)
+└── pyproject.toml
+```
+
+## Behavior notes
+
+**No local embedding.** Never pass an `embedding_generator` — GoodMem embeds content server-side. The parameter is accepted for interface compatibility and silently ignored.
+
+**Upsert semantics.** GoodMem memories are immutable. If you `upsert` a record with an existing `id`, the connector deletes the old memory and creates a new one.
+
+**`content` is write-only in GoodMem.** The server does not return `originalContent` in search responses. Retrieved text comes from `chunkText` (a chunk of the original), which the connector maps back to your `content` field transparently.
+
+**Score convention.** `relevanceScore` from the GoodMem API is a raw pgvector value where lower means more similar. The connector negates it before returning, so SK's standard convention (higher = more relevant) is preserved.
+
+**Filters not supported.** Passing `filter=` to `search()` raises `VectorStoreOperationNotSupportedException`. Post-filter results in application code if needed.
+
+**Pre-computed vectors not supported.** Passing `vector=` to `search()` raises the same exception. Pass text only.
+
+---
+
 ## API reference
 
 ### `GoodMemCollection`
@@ -218,87 +279,8 @@ Pydantic settings class; reads `GOODMEM_*` environment variables.
 ```python
 GoodMemSettings(
     base_url="https://localhost:8080",
-    api_key="your-key",
+    api_key="your_key_here",
     embedder_id=None,   # auto-detected if omitted
-    verify_ssl=True,
+    verify_ssl=false,
 )
 ```
-
----
-
-## Behaviour notes
-
-**No local embedding.** Never pass an `embedding_generator` — GoodMem embeds content server-side. The parameter is accepted for interface compatibility and silently ignored.
-
-**Upsert semantics.** GoodMem memories are immutable. If you `upsert` a record with an existing `id`, the connector deletes the old memory and creates a new one.
-
-**`content` is write-only in GoodMem.** The server does not return `originalContent` in search responses. Retrieved text comes from `chunkText` (a chunk of the original), which the connector maps back to your `content` field transparently.
-
-**Score convention.** `relevanceScore` from the GoodMem API is a raw pgvector value where lower means more similar. The connector negates it before returning, so SK's standard convention (higher = more relevant) is preserved.
-
-**Filters not supported.** Passing `filter=` to `search()` raises `VectorStoreOperationNotSupportedException`. Post-filter results in application code if needed.
-
-**Pre-computed vectors not supported.** Passing `vector=` to `search()` raises the same exception. Pass text only.
-
----
-
-## Running the examples
-
-Three runnable examples are included:
-
-```bash
-cd goodmem_semantic_kernel/examples/python
-
-# Option A — agent with memory tool (also requires OPENAI_API_KEY)
-GOODMEM_API_KEY=your-key GOODMEM_BASE_URL=https://localhost:8080 GOODMEM_VERIFY_SSL=false \
-OPENAI_API_KEY=sk-... \
-python example_agent.py
-
-# Option B — single collection
-GOODMEM_API_KEY=your-key GOODMEM_BASE_URL=https://localhost:8080 GOODMEM_VERIFY_SSL=false \
-python example_single_collection.py
-
-# Option C — store with multiple collections
-GOODMEM_API_KEY=your-key GOODMEM_BASE_URL=https://localhost:8080 GOODMEM_VERIFY_SSL=false \
-python example_store.py
-
-```
-
----
-
-## Running the tests
-
-```bash
-pip install -e ".[dev]"
-
-# Unit tests (no server required)
-pytest tests/unit/
-
-# Integration tests (require a live GoodMem server)
-GOODMEM_API_KEY=your-key pytest -m integration
-```
-
----
-
-## Project structure
-
-```
-goodmem-semantic-kernel/           ← repo root
-├── goodmem_semantic_kernel/       ← importable package
-│   ├── __init__.py        # Public exports: GoodMemCollection, GoodMemStore, GoodMemSettings
-│   ├── _client.py         # Async HTTP wrapper around the GoodMem REST API
-│   ├── collection.py      # VectorStoreCollection + VectorSearch implementation
-│   ├── settings.py        # GoodMemSettings (Pydantic, reads GOODMEM_* env vars)
-│   ├── store.py           # VectorStore implementation
-│   └── examples/python/   # Runnable examples (Options A, B, C)
-├── tests/
-│   ├── unit/              # Mocked unit tests (no server required)
-│   └── integration/       # Live integration tests (require GoodMem server)
-└── pyproject.toml
-```
-
----
-
-## License
-
-MIT — see [LICENSE](LICENSE).
