@@ -28,7 +28,7 @@ Each **Space** can be configured with embedders and/or chunking strategies. Each
 **Requirements:** Python 3.10+ and a running GoodMem server.
 
 ```bash
-pip install goodmem_semantic_kernel
+pip install goodmem-semantic-kernel
 ```
 
 Or from source (note the hyphens, rather than underscores):
