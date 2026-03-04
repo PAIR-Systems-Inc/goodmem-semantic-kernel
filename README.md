@@ -31,14 +31,12 @@ Each **Space** can be configured with embedders and/or chunking strategies. Each
 pip install goodmem-semantic-kernel
 ```
 
-Or from source (note the hyphens, rather than underscores):
+To install from source:
 
 ```bash
 git clone https://github.com/PAIR-Systems-Inc/goodmem-semantic-kernel
-pip install -e goodmem-semantic-kernel
-# alternative methods if facing issues
-# pip install -e ".[dev]"
-# pip install -e .
+cd goodmem-semantic-kernel
+pip install -e .
 ```
 
 ## Configuration
