@@ -37,7 +37,7 @@ class Memory:
 
 async def main() -> None:
     # check to make sure user has set the required environment variables and valid openai model
-    for var in ("GOODMEM_API_KEY", "OPENAI_API_KEY", "GOODMEM_BASE_URL", "GOODMEM_VERIFY_SSL"):
+    for var in ("GOODMEM_API_KEY", "GOODMEM_BASE_URL", "GOODMEM_VERIFY_SSL", "OPENAI_API_KEY"):
         if not os.environ.get(var):
             raise SystemExit(f"Set {var} before running this script.")
 
@@ -65,7 +65,7 @@ async def main() -> None:
             Memory(content="Shakespeare wrote Hamlet, Macbeth, and Romeo and Juliet.", topic="literature"),
             Memory(content="Semantic Kernel is a Microsoft SDK for building AI agents.", topic="technology")
         ])
-        print(f"Seeded 5 memories into 'agent-memory'.")
+        print(f"Seeded 5 memories into the 'agent-memory' GoodMem space.")
         print("Waiting for embeddings...")
         await asyncio.sleep(3)
 
