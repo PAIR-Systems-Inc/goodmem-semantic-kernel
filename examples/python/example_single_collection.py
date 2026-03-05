@@ -27,8 +27,9 @@ class Note:
 
 
 async def main() -> None:
-    if not os.environ.get("GOODMEM_API_KEY"):
-        raise SystemExit("Set GOODMEM_API_KEY before running this script.")
+    for var in ("GOODMEM_API_KEY", "GOODMEM_BASE_URL", "GOODMEM_VERIFY_SSL"):
+        if not os.environ.get(var):
+            raise SystemExit(f"Set {var} before running this script.")
 
     async with GoodMemCollection(record_type=Note, collection_name="my-notes") as coll:
         # 1. Delete then recreate — ensures a clean slate each run

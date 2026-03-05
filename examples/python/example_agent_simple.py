@@ -113,7 +113,7 @@ async def _resolve_openai_model(provided: str | None) -> str:
 
 async def main(openai_model: str | None = None) -> None:
     # check to make sure user has set the required environment variables and valid openai model
-    for var in ("GOODMEM_API_KEY", "OPENAI_API_KEY"):
+    for var in ("GOODMEM_API_KEY", "OPENAI_API_KEY", "GOODMEM_BASE_URL", "GOODMEM_VERIFY_SSL"):
         if not os.environ.get(var):
             raise SystemExit(f"Set {var} before running this script.")
 

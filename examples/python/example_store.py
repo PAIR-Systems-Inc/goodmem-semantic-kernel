@@ -29,8 +29,9 @@ class Note:
 
 
 async def main() -> None:
-    if not os.environ.get("GOODMEM_API_KEY"):
-        raise SystemExit("Set GOODMEM_API_KEY before running this script.")
+    for var in ("GOODMEM_API_KEY", "GOODMEM_BASE_URL", "GOODMEM_VERIFY_SSL"):
+        if not os.environ.get(var):
+            raise SystemExit(f"Set {var} before running this script.")
 
     async with GoodMemStore() as store:
         # 1. List all spaces currently visible to this API key
