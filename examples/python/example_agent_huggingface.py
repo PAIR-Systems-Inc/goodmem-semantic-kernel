@@ -14,7 +14,7 @@ Requirement (in addition to goodmem-semantic-kernel):
     pip install semantic-kernel openai
 
 Environment variables:
-    GOODMEM_BASE_URL    — GoodMem server URL  (default: http://localhost:8080)
+    GOODMEM_BASE_URL    — GoodMem server URL  (default: https://localhost:8080)
     GOODMEM_VERIFY_SSL  — Set to 'false' for self-signed certs
     GOODMEM_API_KEY     — GoodMem API key
     HF_TOKEN            — Hugging Face API token (https://huggingface.co/settings/tokens)

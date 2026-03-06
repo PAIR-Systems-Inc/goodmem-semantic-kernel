@@ -9,7 +9,7 @@ Requirement (in addition to goodmem-semantic-kernel):
     pip install semantic-kernel openai
 
 Environment variables:
-    GOODMEM_BASE_URL    — GoodMem server URL  (default: http://localhost:8080)
+    GOODMEM_BASE_URL    — GoodMem server URL  (default: https://localhost:8080)
     GOODMEM_VERIFY_SSL  — Set to 'false' for self-signed certs
     GOODMEM_API_KEY     — GoodMem API key
     OPENAI_API_KEY      — OpenAI key (used by the chat LLM)
@@ -115,6 +115,10 @@ async def main() -> None:
             ),
             function_choice_behavior=FunctionChoiceBehavior.Auto(),
             plugins=[memory_plugin],
+            # alternatively you can uncomment the line below to skip step 2 and use the as_plugin() function to pass the
+            # collection as a plugin this will give you less control over the plugin name, function description,
+            # parameter metadata, and how each result is formatted for the LLM.
+            # plugins=[collection.as_plugin(name="memory")],
         )
 
         # 4. Interactive chat loop
