@@ -5,7 +5,7 @@ The agent has a memory search tool backed by GoodMem. When the user asks
 a question, the LLM decides whether to call the tool to look up relevant
 memories before composing its answer.
 
-Requirement (in addition to goodmem-semantic-kernel):
+Requirements (in addition to goodmem-semantic-kernel):
     pip install semantic-kernel openai
 
 Environment variables:

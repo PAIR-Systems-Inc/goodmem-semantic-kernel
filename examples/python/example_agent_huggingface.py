@@ -10,7 +10,7 @@ not ChatCompletionClientBase, so it cannot be used with ChatCompletionAgent.
 Instead, we use the Hugging Face Inference API's OpenAI-compatible endpoint
 via OpenAIChatCompletion with a custom AsyncOpenAI client.
 
-Requirement (in addition to goodmem-semantic-kernel):
+Requirements (in addition to goodmem-semantic-kernel):
     pip install semantic-kernel openai
 
 Environment variables:
