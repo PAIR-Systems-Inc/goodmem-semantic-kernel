@@ -115,9 +115,11 @@ async def main() -> None:
             ),
             function_choice_behavior=FunctionChoiceBehavior.Auto(),
             plugins=[memory_plugin],
-            # alternatively you can uncomment the line below to skip step 2 and use the as_plugin() function to pass the
-            # collection as a plugin this will give you less control over the plugin name, function description,
-            # parameter metadata, and how each result is formatted for the LLM.
+            # alternatively you can uncomment the code below to skip step 2 and use the as_plugin() function to pass the
+            # collection as a plugin.
+            # note that this will give you less control over the plugin name, function description, parameter metadata,
+            # and how each result is formatted for the LLM.
+            
             # plugins=[collection.as_plugin(name="memory")],
         )
 
