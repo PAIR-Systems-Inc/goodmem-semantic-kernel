@@ -35,10 +35,14 @@ Documentation = "https://goodmem.ai/docs"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests"]
+testpaths = ["python/tests"]
 markers = [
     "integration: marks tests as integration tests (require a live GoodMem server)",
 ]
 
+[tool.hatch.build]
+sources = ["python"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["goodmem_semantic_kernel"]
+dev-mode-dirs = ["python"]
