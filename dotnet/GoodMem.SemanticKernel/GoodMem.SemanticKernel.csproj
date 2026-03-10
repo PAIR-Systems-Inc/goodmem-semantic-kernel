@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>12</LangVersion>
+    <RootNamespace>GoodMem.SemanticKernel</RootNamespace>
+    <AssemblyName>GoodMem.SemanticKernel</AssemblyName>
+    <Description>GoodMem connector for Microsoft.Extensions.VectorData (Semantic Kernel)</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- VectorData abstractions — use the same package SK ships internally -->
+    <PackageReference Include="Microsoft.Extensions.VectorData.Abstractions" Version="9.*" />
+    <PackageReference Include="System.Linq.AsyncEnumerable" Version="9.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>GoodMem.SemanticKernel.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+</Project>
