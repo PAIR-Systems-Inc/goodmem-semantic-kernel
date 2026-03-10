@@ -39,6 +39,11 @@ cd goodmem-semantic-kernel
 pip install -e .
 ```
 
+### for .NET
+
+`sudo apt install dotnet-host-8.0`
+`sudo apt install dotnet-sdk-8.0`
+
 ## Configuration
 
 All settings are read from environment variables with the `GOODMEM_` prefix, or passed directly via `GoodMemSettings`.
@@ -163,10 +168,10 @@ async def main():
         await todos.upsert(Note(content="Call the dentist"))
 ```
 
-## Running the examples
+## Running the samples
 
 ```bash
-cd goodmem_semantic_kernel/examples/python
+cd samples/python
 
 # Option A — agent with memory tool (also requires OPENAI_API_KEY)
 OPENAI_API_KEY=your_openai_key_here
@@ -179,9 +184,7 @@ python example_single_collection.py
 python example_store.py
 ```
 
-if you failed to run an example successfully, double check [Configuration](#configuration)
-
-or try running inside a python virtual environment if there is a dependency conflict
+If a sample fails, double-check [Configuration](#configuration) or run inside a virtual environment:
 
 ```bash
 python3 -m venv venv
@@ -192,7 +195,7 @@ source venv/bin/activate
 
 ```bash
 # Unit tests (no server required)
-pytest tests/unit/
+pytest python/tests/unit/
 
 # Integration tests (requires a live GoodMem server)
 GOODMEM_API_KEY=your_key_here pytest -m integration
@@ -216,16 +219,21 @@ GOODMEM_API_KEY=your_key_here pytest -m integration
 
 ```
 goodmem-semantic-kernel/           ← repo root
-├── goodmem_semantic_kernel/       ← importable package
-│   ├── __init__.py        # Public exports: GoodMemCollection, GoodMemStore, GoodMemSettings
-│   ├── _client.py         # Async HTTP wrapper around the GoodMem REST API
-│   ├── collection.py      # VectorStoreCollection + VectorSearch implementation
-│   ├── settings.py        # GoodMemSettings (Pydantic, reads GOODMEM_* env vars)
-│   ├── store.py           # VectorStore implementation
-├── tests/
-│   ├── unit/              # Mocked unit tests (no server required)
-│   └── integration/       # Live integration tests (require GoodMem server)
-├── examples/              # Runnable examples (Options A, B, C)
+├── python/
+│   ├── goodmem_semantic_kernel/   ← importable Python package
+│   │   ├── __init__.py        # Public exports: GoodMemCollection, GoodMemStore, GoodMemSettings
+│   │   ├── _client.py         # Async HTTP wrapper around the GoodMem REST API
+│   │   ├── collection.py      # VectorStoreCollection + VectorSearch implementation
+│   │   ├── settings.py        # GoodMemSettings (Pydantic, reads GOODMEM_* env vars)
+│   │   └── store.py           # VectorStore implementation
+│   └── tests/
+│       ├── unit/              # Mocked unit tests (no server required)
+│       └── integration/       # Live integration tests (require GoodMem server)
+├── dotnet/
+│   └── GoodMem.SemanticKernel/    ← .NET connector library
+├── samples/
+│   ├── python/                    ← Runnable Python samples (Options A, B, C)
+│   └── dotnet/                    ← Runnable .NET samples
 └── pyproject.toml
 ```
 

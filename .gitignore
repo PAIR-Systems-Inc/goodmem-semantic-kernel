@@ -2,6 +2,14 @@
 CLAUDE.md
 .claudeignore
 
+# .NET
+bin/
+obj/
+*.user
+appsettings.Development.json
+appsettings.Local.json
+secrets.json
+
 # Python
 __pycache__/
 *.py[cod]
