@@ -37,13 +37,13 @@ _HF_INFERENCE_BASE_URL = "https://router.huggingface.co/v1/"
 # note: not all Hugging Face models will work nicely with this semantic kernel agent setup
 _DEFAULT_HF_MODEL = "meta-llama/Llama-3.1-8B-Instruct"
 
-# Data model - id is key, content is text to store in GoodMem, topic is for easier searching
+# Data model - id is key, content is text to store in GoodMem, source is for easier searching
 @vectorstoremodel
 @dataclass
 class Memory:
     id: Annotated[str | None, VectorStoreField("key")] = None
     content: Annotated[str, VectorStoreField("data", type="str")] = ""
-    topic: Annotated[str | None, VectorStoreField("data")] = None
+    source: Annotated[str | None, VectorStoreField("data")] = None
 
 async def main() -> None:
     for var in ("GOODMEM_API_KEY", "GOODMEM_BASE_URL", "GOODMEM_VERIFY_SSL", "HF_TOKEN"):
@@ -57,11 +57,11 @@ async def main() -> None:
         await collection.ensure_collection_deleted()
         await collection.ensure_collection_exists()
         await collection.upsert([
-            Memory(content="The Pacific Ocean is the largest ocean on Earth.", topic="geography"),
-            Memory(content="Python was created by Guido van Rossum and first released in 1991.", topic="technology"),
-            Memory(content="The speed of light is approximately 299,792 km/s.", topic="science"),
-            Memory(content="Shakespeare wrote Hamlet, Macbeth, and Romeo and Juliet.", topic="literature"),
-            Memory(content="Semantic Kernel is a Microsoft SDK for building AI agents.", topic="technology")
+            Memory(content="The Pacific Ocean is the largest ocean on Earth.", source="geography"),
+            Memory(content="Python was created by Guido van Rossum and first released in 1991.", source="technology"),
+            Memory(content="The speed of light is approximately 299,792 km/s.", source="science"),
+            Memory(content="Shakespeare wrote Hamlet, Macbeth, and Romeo and Juliet.", source="literature"),
+            Memory(content="Semantic Kernel is a Microsoft SDK for building AI agents.", source="technology")
         ])
         print(f"Seeded 5 memories into the 'agent-memory' GoodMem space.")
         print("Waiting for embeddings...")
