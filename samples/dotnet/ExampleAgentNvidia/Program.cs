@@ -46,11 +46,11 @@ await collection.EnsureCollectionDeletedAsync();
 await collection.EnsureCollectionExistsAsync();
 await collection.UpsertAsync(
 [
-    new Memory { Content = "The Pacific Ocean is the largest ocean on Earth.", Topic = "geography" },
-    new Memory { Content = "Python was created by Guido van Rossum and first released in 1991.", Topic = "technology" },
-    new Memory { Content = "The speed of light is approximately 299,792 km/s.", Topic = "science" },
-    new Memory { Content = "Shakespeare wrote Hamlet, Macbeth, and Romeo and Juliet.", Topic = "literature" },
-    new Memory { Content = "Semantic Kernel is a Microsoft SDK for building AI agents.", Topic = "technology" },
+    new Memory { Content = "The Pacific Ocean is the largest ocean on Earth.", Source = "geography" },
+    new Memory { Content = "Python was created by Guido van Rossum and first released in 1991.", Source = "technology" },
+    new Memory { Content = "The speed of light is approximately 299,792 km/s.", Source = "science" },
+    new Memory { Content = "Shakespeare wrote Hamlet, Macbeth, and Romeo and Juliet.", Source = "literature" },
+    new Memory { Content = "Semantic Kernel is a Microsoft SDK for building AI agents.", Source = "technology" },
 ]);
 Console.WriteLine("Seeded 5 memories into the 'agent-memory' GoodMem space.");
 
@@ -115,7 +115,7 @@ public class Memory
 {
     [VectorStoreKey] public string? Id { get; set; }
     [VectorStoreData] public string Content { get; set; } = "";
-    [VectorStoreData] public string? Topic { get; set; }
+    [VectorStoreData] public string? Source { get; set; }
 }
 
 // ── Plugin class ─────────────────────────────────────────────────────────────

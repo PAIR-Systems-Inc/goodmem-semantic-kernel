@@ -27,13 +27,13 @@ namespace GoodMem.SemanticKernel;
 /// {
 ///     [VectorStoreKey] public string? Id { get; set; }
 ///     [VectorStoreData] public string Content { get; set; } = "";
-///     [VectorStoreData] public string? Topic { get; set; }
+///     [VectorStoreData] public string? Source { get; set; }
 ///     [VectorStoreVector(Dimensions: 1536)] public ReadOnlyMemory&lt;float&gt;? Embedding { get; set; }
 /// }
 ///
 /// using var collection = new GoodMemCollection&lt;Memory&gt;("agent-memory");
 /// await collection.EnsureCollectionExistsAsync();
-/// await collection.UpsertAsync(new Memory { Content = "Hello, world!", Topic = "greetings" });
+/// await collection.UpsertAsync(new Memory { Content = "Hello, world!", Source = "greetings" });
 /// </code>
 /// </example>
 public sealed class GoodMemCollection<TRecord> : VectorStoreCollection<string, TRecord>
