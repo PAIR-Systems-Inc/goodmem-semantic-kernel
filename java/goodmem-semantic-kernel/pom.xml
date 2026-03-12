@@ -31,6 +31,13 @@
             <artifactId>jackson-databind</artifactId>
         </dependency>
 
+        <!-- Semantic Kernel Java API (for @DefineKernelFunction / @KernelFunctionParameter) -->
+        <dependency>
+            <groupId>com.microsoft.semantic-kernel</groupId>
+            <artifactId>semantickernel-api</artifactId>
+            <version>${sk.version}</version>
+        </dependency>
+
         <!-- ── Test dependencies ── -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>

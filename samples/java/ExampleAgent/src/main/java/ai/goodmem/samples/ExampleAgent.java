@@ -1,0 +1,147 @@
+package ai.goodmem.samples;
+
+// ExampleAgent — GoodMem collection wired into a Semantic Kernel agent (OpenAI).
+//
+// The agent has a memory search tool backed by GoodMem. When the user asks a
+// question, the LLM decides whether to call the tool to look up relevant
+// memories before composing its answer.
+//
+// Required environment variables:
+//   GOODMEM_BASE_URL   — GoodMem server URL  (default: http://localhost:8080)
+//   GOODMEM_VERIFY_SSL — Set to 'false' for self-signed certs
+//   GOODMEM_API_KEY    — GoodMem API key
+//   OPENAI_API_KEY     — OpenAI API key
+//
+// Run:
+//   cd samples/java/ExampleAgent
+//   mvn install -f ../../../java/pom.xml -DskipTests   # build the library first
+//   mvn exec:java
+
+import ai.goodmem.semantickernel.GoodMemCollection;
+import ai.goodmem.semantickernel.GoodMemData;
+import ai.goodmem.semantickernel.GoodMemKey;
+import ai.goodmem.semantickernel.GoodMemPlugin;
+import reactor.core.scheduler.Schedulers;
+import reactor.netty.http.HttpResources;
+import com.microsoft.semantickernel.Kernel;
+import com.microsoft.semantickernel.aiservices.openai.chatcompletion.OpenAIChatCompletion;
+import com.microsoft.semantickernel.orchestration.InvocationContext;
+import com.microsoft.semantickernel.orchestration.ToolCallBehavior;
+import com.microsoft.semantickernel.plugin.KernelPluginFactory;
+import com.microsoft.semantickernel.services.chatcompletion.ChatCompletionService;
+import com.microsoft.semantickernel.services.chatcompletion.ChatHistory;
+import com.azure.ai.openai.OpenAIAsyncClient;
+import com.azure.ai.openai.OpenAIClientBuilder;
+import com.azure.core.credential.KeyCredential;
+
+import java.util.List;
+import java.util.Scanner;
+
+public class ExampleAgent {
+
+    // ── Data model ────────────────────────────────────────────────────────────
+    public static class Memory {
+        @GoodMemKey
+        public String id;
+
+        @GoodMemData                   // becomes originalContent
+        public String content;
+
+        @GoodMemData("source")         // stored as metadata["source"]
+        public String source;
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        for (var v : List.of("GOODMEM_API_KEY", "GOODMEM_BASE_URL", "OPENAI_API_KEY")) {
+            if (System.getenv(v) == null || System.getenv(v).isBlank())
+                throw new IllegalStateException("Set " + v + " before running this example.");
+        }
+
+        System.out.print("Enter the OpenAI model to use (recommended: gpt-4o-mini): ");
+        var scanner = new Scanner(System.in);
+        var model = scanner.nextLine().trim();
+        if (model.isEmpty()) model = "gpt-4o-mini";
+
+        // ── 1. Set up GoodMem collection with seed data ───────────────────────
+        var collection = GoodMemCollection.of("agent-memory", Memory.class);
+
+        collection.ensureCollectionDeleted().block();
+        collection.ensureCollectionExists().block();
+        collection.upsertAll(List.of(
+                memory("The Pacific Ocean is the largest ocean on Earth.", "geography"),
+                memory("Python was created by Guido van Rossum and first released in 1991.", "technology"),
+                memory("The speed of light is approximately 299,792 km/s.", "science"),
+                memory("Shakespeare wrote Hamlet, Macbeth, and Romeo and Juliet.", "literature"),
+                memory("Semantic Kernel is a Microsoft SDK for building AI agents.", "technology")
+        )).blockLast();
+        System.out.println("Seeded 5 memories into the 'agent-memory' GoodMem space.");
+
+        // GoodMem's embedding pipeline is asynchronous — wait before searching.
+        System.out.println("Waiting for embeddings...");
+        Thread.sleep(3_000);
+
+        // ── 2. Build the Semantic Kernel ──────────────────────────────────────
+        OpenAIAsyncClient openAIClient = new OpenAIClientBuilder()
+                .credential(new KeyCredential(System.getenv("OPENAI_API_KEY")))
+                .buildAsyncClient();
+
+        ChatCompletionService chatService = OpenAIChatCompletion.builder()
+                .withOpenAIAsyncClient(openAIClient)
+                .withModelId(model)
+                .build();
+
+        // ── 3. Register GoodMemPlugin so the LLM can call memory.recall ───────
+        var memoryPlugin = new GoodMemPlugin<>(collection, Memory.class, (content, proto) -> {
+            Memory m = new Memory();
+            m.content = content;
+            m.source = "agent";
+            return m;
+        });
+
+        var kernel = Kernel.builder()
+                .withAIService(ChatCompletionService.class, chatService)
+                .withPlugin(KernelPluginFactory.createFromObject(memoryPlugin, "memory"))
+                .build();
+
+        // ── 4. Interactive chat loop ───────────────────────────────────────────
+        System.out.println("\nMemory agent ready. Type 'exit' to quit.\n");
+
+        var history = new ChatHistory(
+                "You are a helpful assistant with access to a long-term memory store. "
+                + "Always search memory before answering factual questions. "
+                + "Cite what you found in memory when it is relevant.");
+
+        var invocationContext = InvocationContext.builder()
+                .withToolCallBehavior(ToolCallBehavior.allowAllKernelFunctions(true))
+                .build();
+
+        while (true) {
+            System.out.print("You: ");
+            var input = scanner.nextLine().trim();
+            if (input.isEmpty() || "exit".equalsIgnoreCase(input)) break;
+
+            history.addUserMessage(input);
+
+            var response = chatService
+                    .getChatMessageContentsAsync(history, kernel, invocationContext)
+                    .block();
+
+            if (response != null && !response.isEmpty()) {
+                var reply = response.get(response.size() - 1).getContent();
+                System.out.println("Agent: " + reply);
+                history.addAssistantMessage(reply);
+            }
+        }
+
+        collection.close();
+        HttpResources.disposeLoopsAndConnections();
+        Schedulers.shutdownNow();
+    }
+
+    private static Memory memory(String content, String source) {
+        Memory m = new Memory();
+        m.content = content;
+        m.source = source;
+        return m;
+    }
+}
