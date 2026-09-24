@@ -147,18 +147,74 @@ public sealed class GoodMemCollectionTests : IDisposable
     }
 
     [Fact]
-    public async Task UpsertAsync_ExistingRecord_DeletesThenCreates()
+    public async Task UpsertAsync_ExistingRecord_ReadsItBeforeReplacingIt()
     {
-        _handler.EnqueueOk(SpaceFoundJson());           // ResolveSpaceId
-        _handler.EnqueueNoContent();                    // DeleteMemory (existing id)
-        _handler.EnqueueOk(CreateMemoryJson("mem-new")); // CreateMemory
+        // The previous version has to be in hand before the delete: GoodMem has
+        // no update endpoint, so a failed create after a delete would otherwise
+        // destroy the record.
+        _handler.EnqueueOk(SpaceFoundJson());                 // ResolveSpaceId
+        _handler.EnqueueOk(BatchGetJson("existing-id"));      // read the current version
+        _handler.EnqueueNoContent();                          // DeleteMemory
+        _handler.EnqueueOk(CreateMemoryJson("existing-id"));  // CreateMemory
 
         var record = new Memory { Id = "existing-id", Content = "updated" };
         await _collection.UpsertAsync(record);
 
-        Assert.Equal(3, _handler.SentRequests.Count);
-        Assert.Equal(HttpMethod.Delete, _handler.SentRequests[1].Method);
-        Assert.Equal(HttpMethod.Post, _handler.SentRequests[2].Method);
+        Assert.Equal(4, _handler.SentRequests.Count);
+        Assert.EndsWith("memories:batchGet", _handler.SentRequests[1].RequestUri!.AbsolutePath);
+        Assert.Equal(HttpMethod.Delete, _handler.SentRequests[2].Method);
+        Assert.Equal(HttpMethod.Post, _handler.SentRequests[3].Method);
+    }
+
+    [Fact]
+    public async Task UpsertAsync_FailedUpdate_RestoresThePreviousVersion()
+    {
+        _handler.EnqueueOk(SpaceFoundJson());                        // ResolveSpaceId
+        _handler.EnqueueOk(BatchGetJson("existing-id", "aGVsbG8=")); // "hello", base64
+        _handler.EnqueueNoContent();                                 // DeleteMemory
+        _handler.EnqueueBadRequest();                                // CreateMemory fails
+        _handler.EnqueueOk(CreateMemoryJson("existing-id"));         // restore succeeds
+
+        var record = new Memory { Id = "existing-id", Content = "" };
+
+        var error = await Assert.ThrowsAsync<GoodMemUpsertException>(
+            () => _collection.UpsertAsync(record));
+
+        Assert.True(error.Restored);
+        Assert.Null(error.LostKey);
+        Assert.Contains("was restored", error.Message);
+        Assert.Equal(5, _handler.SentRequests.Count);
+    }
+
+    [Fact]
+    public async Task UpsertAsync_FailedUpdateAndFailedRestore_NamesTheLostRecord()
+    {
+        _handler.EnqueueOk(SpaceFoundJson());
+        _handler.EnqueueOk(BatchGetJson("existing-id", "aGVsbG8="));
+        _handler.EnqueueNoContent();
+        _handler.EnqueueBadRequest();                 // CreateMemory fails
+        _handler.EnqueueBadRequest();                 // and so does the restore
+
+        var record = new Memory { Id = "existing-id", Content = "" };
+
+        var error = await Assert.ThrowsAsync<GoodMemUpsertException>(
+            () => _collection.UpsertAsync(record));
+
+        Assert.False(error.Restored);
+        Assert.Equal("existing-id", error.LostKey);
+        Assert.Contains("could NOT be restored", error.Message);
+    }
+
+    [Fact]
+    public async Task UpsertAsync_NewRecordWithAKey_IsNeverDeletedFirst()
+    {
+        _handler.EnqueueOk(SpaceFoundJson());
+        _handler.EnqueueOk(EmptyBatchGetJson());             // nothing to replace
+        _handler.EnqueueOk(CreateMemoryJson("brand-new"));
+
+        await _collection.UpsertAsync(new Memory { Id = "brand-new", Content = "hi" });
+
+        Assert.DoesNotContain(_handler.SentRequests, r => r.Method == HttpMethod.Delete);
     }
 
     [Fact]

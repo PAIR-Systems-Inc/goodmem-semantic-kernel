@@ -1,6 +1,7 @@
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Text;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.VectorData;
 
@@ -161,19 +162,7 @@ public sealed class GoodMemCollection<TRecord> : VectorStoreCollection<string, T
     public override async Task UpsertAsync(TRecord record, CancellationToken cancellationToken = default)
     {
         var spaceId = await ResolveSpaceIdAsync(cancellationToken).ConfigureAwait(false);
-        var (content, metadata, memoryId) = _schema.Serialize(record);
-
-        if (memoryId is not null)
-            await _client.DeleteMemoryAsync(memoryId, cancellationToken).ConfigureAwait(false);
-
-        var result = await _client.CreateMemoryAsync(
-            spaceId, content, metadata: metadata, memoryId: memoryId,
-            ct: cancellationToken).ConfigureAwait(false);
-
-        // Write back the server-generated key to the record if the property is settable.
-        var returnedId = result["memoryId"]?.GetValue<string>() ?? memoryId;
-        if (returnedId is not null)
-            _schema.SetKey(record, returnedId);
+        await UpsertOneAsync(spaceId, record, cancellationToken).ConfigureAwait(false);
     }
 
     /// <inheritdoc/>
@@ -182,19 +171,90 @@ public sealed class GoodMemCollection<TRecord> : VectorStoreCollection<string, T
         var spaceId = await ResolveSpaceIdAsync(cancellationToken).ConfigureAwait(false);
 
         foreach (var record in records)
+            await UpsertOneAsync(spaceId, record, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Writes one record, restoring the previous version if the write fails.
+    /// </summary>
+    /// <remarks>
+    /// GoodMem memories cannot be updated in place, so replacing one means
+    /// deleting it and creating it again. Deleting first and then failing to
+    /// create would destroy the record, so the current version is read before
+    /// the delete and written back if the create fails.
+    /// </remarks>
+    private async Task UpsertOneAsync(string spaceId, TRecord record, CancellationToken cancellationToken)
+    {
+        var (content, metadata, memoryId) = _schema.Serialize(record);
+
+        JsonObject? previous = null;
+        if (memoryId is not null)
         {
-            var (content, metadata, memoryId) = _schema.Serialize(record);
+            var existing = await _client.BatchGetMemoriesAsync([memoryId], cancellationToken)
+                .ConfigureAwait(false);
+            previous = existing.Count > 0 ? existing[0] : null;
+        }
 
-            if (memoryId is not null)
-                await _client.DeleteMemoryAsync(memoryId, cancellationToken).ConfigureAwait(false);
+        if (previous is not null)
+            await _client.DeleteMemoryAsync(memoryId!, cancellationToken).ConfigureAwait(false);
 
-            var result = await _client.CreateMemoryAsync(
+        JsonObject result;
+        try
+        {
+            result = await _client.CreateMemoryAsync(
                 spaceId, content, metadata: metadata, memoryId: memoryId,
                 ct: cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exc) when (previous is not null)
+        {
+            var restored = await TryRestoreAsync(spaceId, memoryId!, previous, cancellationToken)
+                .ConfigureAwait(false);
+            throw new GoodMemUpsertException(
+                $"Updating record {memoryId} failed: {exc.Message}. " +
+                (restored
+                    ? "The previous version was restored."
+                    : "The previous version could NOT be restored and is lost."),
+                restored,
+                restored ? null : memoryId,
+                exc);
+        }
 
-            var returnedId = result["memoryId"]?.GetValue<string>() ?? memoryId;
-            if (returnedId is not null)
-                _schema.SetKey(record, returnedId);
+        // Write back the server-generated key to the record if the property is settable.
+        var returnedId = result["memoryId"]?.GetValue<string>() ?? memoryId;
+        if (returnedId is not null)
+            _schema.SetKey(record, returnedId);
+    }
+
+    private async Task<bool> TryRestoreAsync(
+        string spaceId, string memoryId, JsonObject previous, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var encoded = previous["originalContent"]?.GetValue<string>();
+            var text = encoded is null
+                ? string.Empty
+                : Encoding.UTF8.GetString(Convert.FromBase64String(encoded));
+
+            Dictionary<string, object?>? metadata = null;
+            if (previous["metadata"] is JsonObject previousMetadata)
+            {
+                metadata = [];
+                foreach (var entry in previousMetadata)
+                    metadata[entry.Key] = entry.Value?.GetValue<object?>();
+            }
+
+            await _client.CreateMemoryAsync(
+                spaceId,
+                text,
+                contentType: previous["contentType"]?.GetValue<string>() ?? "text/plain",
+                metadata: metadata,
+                memoryId: memoryId,
+                ct: cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+        catch
+        {
+            return false;
         }
     }
 

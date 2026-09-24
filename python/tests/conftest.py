@@ -1,45 +1,32 @@
-"""Shared fixtures for GoodMem SK tests."""
-
-from dataclasses import dataclass
-from typing import Annotated
+"""Pytest fixtures; the helpers live in :mod:`support`."""
 
 import pytest
+from goodmem import AsyncGoodmem
+from support import Note, Recorder, build_client, build_settings
 
-from goodmem_semantic_kernel._client import GoodMemAsyncClient
-from goodmem_semantic_kernel.settings import GoodMemSettings
-
-# ---------------------------------------------------------------------------
-# Shared data model used by unit tests
-# ---------------------------------------------------------------------------
-
-# Import these lazily to avoid import errors if SK is not installed yet
-try:
-    from semantic_kernel.data.vector import VectorStoreField, vectorstoremodel
-
-    @vectorstoremodel
-    @dataclass
-    class NoteModel:
-        """Simple test record type."""
-
-        id: Annotated[str | None, VectorStoreField("key")] = None
-        content: Annotated[str, VectorStoreField("data", type="str")] = ""
-        tag: Annotated[str | None, VectorStoreField("data")] = None
-
-except ImportError:
-    NoteModel = None  # type: ignore[assignment,misc]
+from goodmem_semantic_kernel import GoodMemCollection, GoodMemSettings
 
 
 @pytest.fixture
-def note_model():
-    """Return the NoteModel class."""
-    return NoteModel
+def recorder() -> Recorder:
+    return Recorder()
 
 
 @pytest.fixture
-def goodmem_settings():
-    """Return a GoodMemSettings instance with dummy values suitable for unit tests."""
-    return GoodMemSettings(
-        base_url="http://localhost:8080",
-        api_key="test-api-key",
-        embedder_id="embedder-uuid-001",
+def sdk_client(recorder: Recorder) -> AsyncGoodmem:
+    return build_client(recorder)
+
+
+@pytest.fixture
+def settings() -> GoodMemSettings:
+    return build_settings()
+
+
+@pytest.fixture
+def collection(sdk_client: AsyncGoodmem, settings: GoodMemSettings) -> GoodMemCollection:
+    return GoodMemCollection(
+        record_type=Note,
+        collection_name="notes",
+        settings=settings,
+        client=sdk_client,
     )

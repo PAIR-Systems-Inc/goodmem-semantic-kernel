@@ -8,7 +8,6 @@ from semantic_kernel.connectors.ai.embedding_generator_base import EmbeddingGene
 from semantic_kernel.data.vector import (
     TModel,
     VectorStore,
-    VectorStoreCollection,
     VectorStoreCollectionDefinition,
 )
 
@@ -17,7 +16,9 @@ if sys.version_info >= (3, 12):
 else:
     from typing_extensions import override  # pragma: no cover
 
-from goodmem_semantic_kernel._client import GoodMemAsyncClient
+from goodmem import AsyncGoodmem
+
+from goodmem_semantic_kernel._connection import GoodMemConnection
 from goodmem_semantic_kernel.collection import GoodMemCollection
 from goodmem_semantic_kernel.settings import GoodMemSettings
 
@@ -58,29 +59,21 @@ class GoodMemStore(VectorStore):
     """
 
     settings: GoodMemSettings
-    _http: GoodMemAsyncClient
 
     def __init__(
         self,
         settings: GoodMemSettings | None = None,
-        client: GoodMemAsyncClient | None = None,
+        client: AsyncGoodmem | None = None,
         **kwargs: Any,
     ) -> None:
-        resolved_settings = settings or GoodMemSettings()
-        managed = client is None
+        resolved_settings = settings or GoodMemSettings()  # type: ignore[call-arg]
+        conn = GoodMemConnection(resolved_settings, client)
 
-        super().__init__(managed_client=managed, settings=resolved_settings, **kwargs)
-
-        object.__setattr__(
-            self,
-            "_http",
-            client
-            or GoodMemAsyncClient(
-                base_url=resolved_settings.base_url,
-                api_key=resolved_settings.api_key.get_secret_value(),
-                verify_ssl=resolved_settings.verify_ssl,
-            ),
+        # `settings` is a field on this subclass, not on VectorStore's __init__.
+        super().__init__(  # type: ignore[call-arg]
+            managed_client=conn.owns_client, settings=resolved_settings, **kwargs
         )
+        object.__setattr__(self, "_conn", conn)
 
     # ------------------------------------------------------------------
     # Context manager
@@ -92,9 +85,10 @@ class GoodMemStore(VectorStore):
 
     @override
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        """Close the shared HTTP client if we own it."""
+        """Close the shared SDK client if we own it."""
         if self.managed_client:
-            await self._http.aclose()
+            connection: GoodMemConnection = self._conn  # type: ignore[attr-defined]
+            await connection.aclose()
 
     # ------------------------------------------------------------------
     # VectorStore interface
@@ -132,12 +126,22 @@ class GoodMemStore(VectorStore):
             definition=definition,
             collection_name=collection_name,
             settings=self.settings,
-            client=self._http,  # shared client — managed_client=False
+            connection=self._conn,  # type: ignore[attr-defined]  # shared client
             **kwargs,
         )
 
+    @property
+    def _connection(self) -> GoodMemConnection:
+        return self._conn  # type: ignore[attr-defined]
+
     @override
     async def list_collection_names(self, **kwargs: Any) -> Sequence[str]:
-        """Return the names of all GoodMem spaces visible to this API key."""
-        spaces = await self._http.list_spaces()
-        return [s["name"] for s in spaces if "name" in s]
+        """Return the names of all GoodMem spaces visible to this API key.
+
+        Follows SDK pagination rather than stopping at the first page.
+        """
+        return [
+            space.name
+            async for space in await self._connection.client.spaces.list(max_items=1000)
+            if space.name
+        ]

@@ -1,4 +1,4 @@
-# igoodmem_semantic-kernel
+# goodmem-semantic-kernel
 
 A [GoodMem](https://goodmem.ai) connector for [Microsoft Semantic Kernel](https://github.com/microsoft/semantic-kernel).
 
@@ -96,8 +96,12 @@ export GOODMEM_VERIFY_SSL=true_or_false
 |---|---|---|---|
 | `GOODMEM_API_KEY` | Yes | — | API key for the GoodMem server |
 | `GOODMEM_BASE_URL` | No | `http://localhost:8080` | GoodMem server base URL |
-| `GOODMEM_EMBEDDER_ID` | No | auto-detected | UUID of the embedder to use |
-| `GOODMEM_VERIFY_SSL` | No | `false` | Set to `false` for self-signed certs, set to `true` if you setup custom TLS certs|
+| `GOODMEM_EMBEDDER_ID` | Yes, to create a collection | — | UUID of the embedder the space is indexed with. The connector will not choose one for you: the choice is permanent for a space |
+| `GOODMEM_RERANKER_ID` | No | — | UUID of a reranker to apply to searches |
+| `GOODMEM_VERIFY_SSL` | No | `true` | Set to `false` for self-signed certs |
+| `GOODMEM_TIMEOUT` | No | `30` | Per-request timeout in seconds |
+| `GOODMEM_WAIT_FOR_INDEXING` | No | `true` | Wait for each written memory to finish indexing, so a search straight after a write can find it |
+| `GOODMEM_INDEXING_TIMEOUT` | No | `60` | How long that wait lasts |
 
 ## Running the samples
 
@@ -152,12 +156,29 @@ Each sample lists its required environment variables in the file header.
 
 ## Testing
 
-```bash
-# Unit tests (no server required)
-pytest python/tests/unit/
+These are the same commands CI runs.
 
-# Integration tests (requires a live GoodMem server)
-GOODMEM_API_KEY=your_key_here pytest -m integration
+```bash
+# Python: 36 offline tests. They drive the real SDK over a mock HTTP
+# transport, using event shapes captured from a live server.
+pip install -e ".[dev]"
+ruff check python/ && ruff format --check python/
+mypy
+pytest python/tests -q
+
+# Python: 13 more live tests run when a server is configured. Without these
+# variables they skip, which is also how we check no credential is baked in.
+GOODMEM_BASE_URL=https://localhost:8080 \
+GOODMEM_API_KEY=your_key_here \
+GOODMEM_EMBEDDER_ID=your_embedder_uuid \
+GOODMEM_VERIFY_SSL=false \
+  pytest python/tests -q
+
+# .NET: 47 offline tests (3 integration tests skip without GOODMEM_API_KEY)
+dotnet test dotnet/GoodMem.SemanticKernel.Tests/GoodMem.SemanticKernel.Tests.csproj
+
+# Java: 23 tests against a WireMock server
+mvn -f java/pom.xml test
 ```
 
 ### Define a data model
@@ -233,10 +254,26 @@ see [example_single_store.py](samples/python/example_single_store.py)
 ## Behavior notes
 
 - **No local embedding.** Never pass an `embedding_generator` — GoodMem embeds content server-side. The parameter is accepted for interface compatibility and silently ignored.
-- **Upsert semantics.** GoodMem memories are immutable. If you `upsert` a record with an existing `id`, the connector deletes the old memory and creates a new one.
+- **Upsert semantics.** GoodMem memories are immutable — there is no update endpoint — so upserting a record that already exists deletes the old memory and creates a new one. The connector reads the current version **before** the delete and writes it back if the create fails, then raises `GoodMemUpsertError` (Python) / `GoodMemUpsertException` (.NET, Java) saying whether the restore succeeded. Semantic Kernel wraps what a collection raises, so in Python the detail is on `__cause__`:
+
+  ```python
+  try:
+      await collection.upsert(note)
+  except VectorStoreOperationException as exc:
+      detail = exc.__cause__          # GoodMemUpsertError
+      detail.restored                 # True when the old version is back
+      detail.lost_key                 # set only if it could not be restored
+      detail.written_keys             # records written before the failure
+  ```
 - **`content` is write-only in GoodMem.** The server does not return `originalContent` in search responses. Retrieved text comes from `chunkText` (a chunk of the original), which the connector maps back to your `content` field transparently.
-- **Score convention.** `relevanceScore` from the GoodMem API is a raw pgvector value where lower means more similar. The connector negates it before returning, so SK's standard convention (higher = more relevant) is preserved.
--  **Filters not supported.** Passing `filter=` to `search()` raises `VectorStoreOperationNotSupportedException`. Post-filter results in application code if needed.
+- **Score convention.** A GoodMem vector `relevanceScore` is a raw pgvector value where lower means more similar, so the connector negates it and Semantic Kernel's higher-is-better convention holds. A **reranker** score is already higher-is-better and is passed through unchanged — reranker ranges are provider-dependent (Voyage rerank-2.5 returns roughly `0.27..0.93`, Jina v3 `-0.14..0.43`), so do not assume 0–1 when choosing a threshold.
+- **Filters.** `search(filter=...)` is translated to a GoodMem filter expression and evaluated server-side:
+
+  ```python
+  await collection.search("quarterly", filter=lambda n: n.tag == "finance" and n.year > 2000)
+  ```
+
+  `==`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `not in`, `and`, `or` and `not` are supported. Values are quoted and cast for you — a value containing an apostrophe is a value, not syntax — and a boolean is compared with a `BOOLEAN` cast, because comparing one as text is accepted by the server and matches nothing. Two limits come from Semantic Kernel itself, which re-parses the lambda's own source: the value must be a **literal** rather than a variable, and the call has to fit on one line. Only metadata fields can be filtered; the `content` field is the embedded body, not metadata.
 -  **Pre-computed vectors not supported.** Passing `vector=` to `search()` raises the same exception. Pass text only.
 
 ## Project structure
@@ -246,11 +283,14 @@ goodmem-semantic-kernel/           ← repo root
 ├── python/
 │   ├── goodmem_semantic_kernel/   ← importable Python package
 │   │   ├── __init__.py        # Public exports: GoodMemCollection, GoodMemStore, GoodMemSettings
-│   │   ├── _client.py         # Async HTTP wrapper around the GoodMem REST API
+│   │   ├── _connection.py     # Owns (or borrows) the official goodmem SDK client
+│   │   ├── _results.py        # Retrieval statuses, chunk→memory join, score direction
+│   │   ├── _typing.py         # Protocols for the SDK surface this package calls
 │   │   ├── collection.py      # VectorStoreCollection + VectorSearch implementation
+│   │   ├── filters.py         # Builds GoodMem filter expressions safely
 │   │   ├── settings.py        # GoodMemSettings (Pydantic, reads GOODMEM_* env vars)
 │   │   └── store.py           # VectorStore implementation
-│   └── tests/
+│   └── tests/                 # support.py + test_regressions.py + test_e2e.py
 ├── dotnet/
 │   └── GoodMem.SemanticKernel/    ← .NET connector library
 │   └── GoodMem.SemanticKernel.Tests/
@@ -321,7 +361,11 @@ Pydantic settings class; reads `GOODMEM_*` environment variables.
 GoodMemSettings(
     base_url="https://localhost:8080",
     api_key="your_key_here",
-    embedder_id=None,   # auto-detected if omitted
-    verify_ssl=false,
+    embedder_id="your_embedder_uuid",  # required to create a space
+    reranker_id=None,
+    verify_ssl=True,
+    timeout=30.0,
+    wait_for_indexing=True,
+    indexing_timeout=60.0,
 )
 ```
