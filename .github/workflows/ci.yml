@@ -38,7 +38,10 @@ jobs:
           .venv/bin/python -m build
       - name: No API key in the tree
         run: |
-          if grep -rInE "gm_[A-Za-z0-9_-]{20,}" --include="*.py" --include="*.cs" --include="*.java" --include="*.md" --include="*.yml" .; then
+          # Exclude what the build itself puts in the tree: the venv installs the
+          # SDK, whose own files mention example keys.
+          if grep -rInE "gm_[A-Za-z0-9_-]{20,}" --include="*.py" --include="*.cs" --include="*.java" --include="*.md" --include="*.yml" \
+               --exclude-dir=.venv --exclude-dir=.git --exclude-dir=bin --exclude-dir=obj --exclude-dir=target --exclude-dir=dist .; then
             echo "A GoodMem API key is committed in this repository."
             exit 1
           fi
