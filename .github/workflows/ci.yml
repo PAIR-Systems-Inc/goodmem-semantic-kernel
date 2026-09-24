@@ -41,7 +41,7 @@ jobs:
           # A key is gm_ followed by letters and digits, as a whole token. The
           # first cut of this gate had no boundary and matched scipy's
           # _logm_force_nonsingular_triangular_matrix inside the CI venv.
-          if grep -rInE "(^|[^A-Za-z0-9_])gm_[A-Za-z0-9]{20,}([^A-Za-z0-9_]|$)" --include="*.py" --include="*.cs" --include="*.java" --include="*.md" --include="*.yml" \\
+          if grep -rInE "(^|[^A-Za-z0-9_])gm_[A-Za-z0-9]{20,}([^A-Za-z0-9_]|$)" --include="*.py" --include="*.cs" --include="*.java" --include="*.md" --include="*.yml" \
                --exclude-dir=.venv --exclude-dir=.git --exclude-dir=bin --exclude-dir=obj --exclude-dir=target --exclude-dir=dist .; then
             echo "A GoodMem API key is committed in this repository."
             exit 1
