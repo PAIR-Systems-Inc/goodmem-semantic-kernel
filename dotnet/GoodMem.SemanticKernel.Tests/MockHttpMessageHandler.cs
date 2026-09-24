@@ -25,6 +25,13 @@ internal sealed class MockHttpMessageHandler : HttpMessageHandler
     /// <summary>Shorthand: enqueue a 404 Not Found response.</summary>
     public void EnqueueNotFound() => Enqueue(new HttpResponseMessage(HttpStatusCode.NotFound));
 
+    /// <summary>Enqueues a 400 carrying the server's own error body.</summary>
+    public void EnqueueBadRequest(string json = """{"errors":[{"field":"content","message":"must be provided"}]}""") =>
+        Enqueue(new HttpResponseMessage(HttpStatusCode.BadRequest)
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json"),
+        });
+
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
         SentRequests.Add(request);

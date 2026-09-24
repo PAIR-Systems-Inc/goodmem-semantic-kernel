@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -e ".[dev]"
+      - name: Lint
+        run: |
+          .venv/bin/ruff check python/
+          .venv/bin/ruff format --check python/
+      - name: Type check
+        run: .venv/bin/mypy
+      - name: Tests
+        # No credentials here, so the live tests skip. That is also the check
+        # that none are baked into the package.
+        run: .venv/bin/python -m pytest python/tests -q
+      - name: Build
+        run: |
+          .venv/bin/pip install build
+          .venv/bin/python -m build
+      - name: No API key in the tree
+        run: |
+          # A key is gm_ followed by letters and digits, as a whole token. The
+          # first cut of this gate had no boundary and matched scipy's
+          # _logm_force_nonsingular_triangular_matrix inside the CI venv.
+          if grep -rInE "(^|[^A-Za-z0-9_])gm_[A-Za-z0-9]{20,}([^A-Za-z0-9_]|$)" --include="*.py" --include="*.cs" --include="*.java" --include="*.md" --include="*.yml" \
+               --exclude-dir=.venv --exclude-dir=.git --exclude-dir=bin --exclude-dir=obj --exclude-dir=target --exclude-dir=dist .; then
+            echo "A GoodMem API key is committed in this repository."
+            exit 1
+          fi
+
+  dotnet:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - name: Build
+        run: dotnet build dotnet/GoodMem.SemanticKernel/GoodMem.SemanticKernel.csproj --configuration Release
+      - name: Tests
+        # The integration tests skip themselves without GOODMEM_API_KEY.
+        run: dotnet test dotnet/GoodMem.SemanticKernel.Tests/GoodMem.SemanticKernel.Tests.csproj --configuration Release
+
+  java:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: Build and test
+        run: mvn -B -f java/pom.xml test

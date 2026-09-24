@@ -1,10 +1,15 @@
 package ai.goodmem.semantickernel;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -33,6 +38,9 @@ import java.util.concurrent.atomic.AtomicReference;
  * @param <T> the record type; must have exactly one {@link GoodMemKey} field and at least one {@link GoodMemData} field
  */
 public final class GoodMemCollection<T> implements AutoCloseable {
+
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
 
     private final String name;
     private final GoodMemClient client;
@@ -118,9 +126,13 @@ public final class GoodMemCollection<T> implements AutoCloseable {
     // ── CRUD ─────────────────────────────────────────────────────────────────
 
     /**
-     * Inserts or replaces a record. If the record has a non-null key, the existing
-     * memory with that ID is deleted first (GoodMem is append-only; upsert is
-     * implemented as delete-then-insert).
+     * Inserts or replaces a record.
+     *
+     * <p>GoodMem memories cannot be updated in place, so replacing one means deleting
+     * it and creating it again. Deleting first and then failing to create would destroy
+     * the record, so the current version is read before the delete and written back if
+     * the create fails; a failure then raises {@link GoodMemUpsertException} saying
+     * whether the restore succeeded.
      *
      * @return the server-assigned memory ID
      */
@@ -128,18 +140,61 @@ public final class GoodMemCollection<T> implements AutoCloseable {
         return resolveSpaceId().flatMap(sid -> {
             var ser = schema.serialize(record);
 
-            Mono<Void> deletePrior = ser.memoryId() != null
-                    ? client.deleteMemory(ser.memoryId())
-                    : Mono.empty();
+            if (ser.memoryId() == null) {
+                return create(sid, ser, record);
+            }
 
-            return deletePrior.then(
-                    client.createMemory(sid, ser.content(), null, ser.metadata(), ser.memoryId())
-            ).map(result -> {
-                String returnedId = result.path("memoryId").asText(null);
-                if (returnedId != null) schema.setKey(record, returnedId);
-                return returnedId != null ? returnedId : "";
-            });
+            return client.batchGetMemories(List.of(ser.memoryId()))
+                    .flatMap(existing -> {
+                        if (existing.isEmpty()) {
+                            // Nothing to replace; a plain create, with no delete.
+                            return create(sid, ser, record);
+                        }
+                        ObjectNode previous = existing.get(0);
+                        return client.deleteMemory(ser.memoryId())
+                                .then(create(sid, ser, record))
+                                .onErrorResume(error -> restore(sid, ser.memoryId(), previous)
+                                        .map(restored -> {
+                                            throw new GoodMemUpsertException(
+                                                    "Updating record " + ser.memoryId() + " failed: "
+                                                            + error.getMessage() + ". "
+                                                            + (restored
+                                                                    ? "The previous version was restored."
+                                                                    : "The previous version could NOT be"
+                                                                            + " restored and is lost."),
+                                                    restored,
+                                                    restored ? null : ser.memoryId(),
+                                                    error);
+                                        }));
+                    });
         });
+    }
+
+    private Mono<String> create(String spaceId, GoodMemSchema.SerializedRecord ser, T record) {
+        return client.createMemory(spaceId, ser.content(), null, ser.metadata(), ser.memoryId())
+                .map(result -> {
+                    String returnedId = result.path("memoryId").asText(null);
+                    if (returnedId != null) schema.setKey(record, returnedId);
+                    return returnedId != null ? returnedId : "";
+                });
+    }
+
+    /** Writes the previous version back. Emits {@code true} when that succeeded. */
+    private Mono<Boolean> restore(String spaceId, String memoryId, ObjectNode previous) {
+        String encoded = previous.path("originalContent").asText(null);
+        String content = encoded == null
+                ? ""
+                : new String(Base64.getDecoder().decode(encoded), StandardCharsets.UTF_8);
+
+        Map<String, Object> metadata = null;
+        if (previous.path("metadata").isObject()) {
+            metadata = MAPPER.convertValue(previous.get("metadata"), MAP_TYPE);
+        }
+        String contentType = previous.path("contentType").asText("text/plain");
+
+        return client.createMemory(spaceId, content, contentType, metadata, memoryId)
+                .map(ignored -> true)
+                .onErrorReturn(false);
     }
 
     /**

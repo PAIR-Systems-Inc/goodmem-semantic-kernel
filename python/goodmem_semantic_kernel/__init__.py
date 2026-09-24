@@ -26,14 +26,15 @@ Quick start::
             print(r.record.content, r.score)
 """
 
-from goodmem_semantic_kernel._client import GoodMemAsyncClient
-from goodmem_semantic_kernel.collection import GoodMemCollection
+from goodmem_semantic_kernel._connection import GoodMemConnection
+from goodmem_semantic_kernel.collection import GoodMemCollection, GoodMemUpsertError
 from goodmem_semantic_kernel.settings import GoodMemSettings
 from goodmem_semantic_kernel.store import GoodMemStore
 
 __all__ = [
-    "GoodMemAsyncClient",
     "GoodMemCollection",
+    "GoodMemConnection",
+    "GoodMemUpsertError",
     "GoodMemSettings",
     "GoodMemStore",
 ]
