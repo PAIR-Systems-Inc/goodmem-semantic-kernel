@@ -111,7 +111,8 @@ final class GoodMemClient implements AutoCloseable {
 
     Mono<Void> deleteSpace(String spaceId) {
         return Mono.fromCallable(() -> {
-            doDelete("v1/spaces/" + encode(spaceId), false);
+            // The id is a path segment: only a UUID may reach it (see GoodMemIds).
+            doDelete("v1/spaces/" + GoodMemIds.requireUuid(spaceId, "spaceId"), false);
             return (Void) null;
         }).subscribeOn(Schedulers.boundedElastic()).then();
     }
@@ -175,7 +176,8 @@ final class GoodMemClient implements AutoCloseable {
     /** 404 responses are silently ignored (already deleted). */
     Mono<Void> deleteMemory(String memoryId) {
         return Mono.fromCallable(() -> {
-            doDelete("v1/memories/" + encode(memoryId), true);
+            // The id is a path segment: only a UUID may reach it (see GoodMemIds).
+            doDelete("v1/memories/" + GoodMemIds.requireUuid(memoryId, "memoryId"), true);
             return (Void) null;
         }).subscribeOn(Schedulers.boundedElastic()).then();
     }

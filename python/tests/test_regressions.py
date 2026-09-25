@@ -14,7 +14,12 @@ from semantic_kernel.exceptions.vector_store_exceptions import (
 )
 from support import (
     EMBEDDER_ID,
+    MEMORY_1,
+    MEMORY_2,
+    MEMORY_MISSING,
+    MEMORY_NEW,
     REAL_VECTOR_SCORE,
+    RERANKER_ID,
     Note,
     chunk_event,
     memory_event,
@@ -55,14 +60,14 @@ async def test_get_reads_the_results_envelope(collection, recorder):
                 "results": [
                     {
                         "success": True,
-                        "memory": memory_json("m-1", content="hello", metadata={"tag": "a"}),
+                        "memory": memory_json(MEMORY_1, content="hello", metadata={"tag": "a"}),
                     }
                 ]
             },
         ),
     )
 
-    records = await collection.get(keys=["m-1"])
+    records = await collection.get(keys=[MEMORY_1])
 
     assert records is not None, "an existing record must be readable"
     assert records[0].content == "hello"
@@ -76,11 +81,11 @@ async def test_get_asks_for_the_content(collection, recorder):
         "POST",
         "/v1/memories:batchGet",
         httpx.Response(
-            200, json={"results": [{"success": True, "memory": memory_json("m-1", content="x")}]}
+            200, json={"results": [{"success": True, "memory": memory_json(MEMORY_1, content="x")}]}
         ),
     )
 
-    await collection.get(keys=["m-1"])
+    await collection.get(keys=[MEMORY_1])
 
     body = recorder.bodies_for("POST", "/v1/memories:batchGet")[0]
     assert body.get("includeContent") is True
@@ -95,14 +100,14 @@ async def test_get_returns_records_in_the_requested_order(collection, recorder):
             200,
             json={
                 "results": [
-                    {"success": True, "memory": memory_json("m-2", content="second")},
-                    {"success": True, "memory": memory_json("m-1", content="first")},
+                    {"success": True, "memory": memory_json(MEMORY_2, content="second")},
+                    {"success": True, "memory": memory_json(MEMORY_1, content="first")},
                 ]
             },
         ),
     )
 
-    records = await collection.get(keys=["m-1", "m-2"])
+    records = await collection.get(keys=[MEMORY_1, MEMORY_2])
 
     assert [r.content for r in records] == ["first", "second"]
 
@@ -116,16 +121,16 @@ async def test_get_skips_unsuccessful_results(collection, recorder):
             200,
             json={
                 "results": [
-                    {"success": True, "memory": memory_json("m-1", content="kept")},
+                    {"success": True, "memory": memory_json(MEMORY_1, content="kept")},
                     {"success": False, "errorMessage": "not found"},
                 ]
             },
         ),
     )
 
-    records = await collection.get(keys=["m-1", "m-missing"])
+    records = await collection.get(keys=[MEMORY_1, MEMORY_MISSING])
 
-    assert [r.id for r in records] == ["m-1"]
+    assert [r.id for r in records] == [MEMORY_1]
 
 
 # ---------------------------------------------------------------------------
@@ -138,15 +143,15 @@ async def test_failed_update_restores_the_previous_version(collection, recorder)
     recorder.route("GET", "/v1/spaces", spaces_listing("notes"))
     recorder.route(
         "GET",
-        "/v1/memories/m-1",
-        httpx.Response(200, json=memory_json("m-1", content="old", metadata={"tag": "a"})),
+        f"/v1/memories/{MEMORY_1}",
+        httpx.Response(200, json=memory_json(MEMORY_1, content="old", metadata={"tag": "a"})),
     )
     recorder.route(
         "GET",
-        "/v1/memories/m-1/content",
+        f"/v1/memories/{MEMORY_1}/content",
         httpx.Response(200, content=b"old text", headers={"content-type": "text/plain"}),
     )
-    recorder.route("DELETE", "/v1/memories/m-1", httpx.Response(204))
+    recorder.route("DELETE", f"/v1/memories/{MEMORY_1}", httpx.Response(204))
 
     creates: list[dict] = []
 
@@ -164,7 +169,7 @@ async def test_failed_update_restores_the_previous_version(collection, recorder)
     recorder.route("POST", "/v1/memories", create)
 
     with pytest.raises(VectorStoreOperationException) as caught:
-        await collection.upsert(Note(id="m-1", content="", tag="a"))
+        await collection.upsert(Note(id=MEMORY_1, content="", tag="a"))
 
     # Semantic Kernel wraps what a collection raises, so the detail is on the
     # cause. The message itself still says the record was restored.
@@ -174,61 +179,65 @@ async def test_failed_update_restores_the_previous_version(collection, recorder)
     assert cause.lost_key is None
     assert "was restored" in str(caught.value)
     # The restore put the old content back under the same key.
-    assert creates[1]["memoryId"] == "m-1"
+    assert creates[1]["memoryId"] == MEMORY_1
     assert creates[1]["originalContent"] == "old text"
 
 
 async def test_failed_update_that_cannot_be_restored_names_the_record(collection, recorder):
     recorder.route("GET", "/v1/spaces", spaces_listing("notes"))
     recorder.route(
-        "GET", "/v1/memories/m-1", httpx.Response(200, json=memory_json("m-1", content="old"))
+        "GET",
+        f"/v1/memories/{MEMORY_1}",
+        httpx.Response(200, json=memory_json(MEMORY_1, content="old")),
     )
-    recorder.route("GET", "/v1/memories/m-1/content", httpx.Response(200, content=b"old text"))
-    recorder.route("DELETE", "/v1/memories/m-1", httpx.Response(204))
+    recorder.route(
+        "GET", f"/v1/memories/{MEMORY_1}/content", httpx.Response(200, content=b"old text")
+    )
+    recorder.route("DELETE", f"/v1/memories/{MEMORY_1}", httpx.Response(204))
     recorder.route("POST", "/v1/memories", httpx.Response(500, json={"error": "down"}))
 
     with pytest.raises(VectorStoreOperationException) as caught:
-        await collection.upsert(Note(id="m-1", content="new"))
+        await collection.upsert(Note(id=MEMORY_1, content="new"))
 
     cause = caught.value.__cause__
     assert isinstance(cause, GoodMemUpsertError)
     assert cause.restored is False
-    assert cause.lost_key == "m-1"
+    assert cause.lost_key == MEMORY_1
     assert "could NOT be restored" in str(caught.value)
 
 
 async def test_a_new_record_is_never_deleted_first(collection, recorder):
     """A key that does not exist yet must not trigger a delete."""
     recorder.route("GET", "/v1/spaces", spaces_listing("notes"))
-    recorder.route("GET", "/v1/memories/m-new", httpx.Response(404, json={"error": "nope"}))
+    recorder.route("GET", f"/v1/memories/{MEMORY_NEW}", httpx.Response(404, json={"error": "nope"}))
     recorder.route(
-        "POST", "/v1/memories", httpx.Response(201, json=memory_json("m-new", content="hi"))
+        "POST", "/v1/memories", httpx.Response(201, json=memory_json(MEMORY_NEW, content="hi"))
     )
 
-    keys = await collection.upsert(Note(id="m-new", content="hi"))
+    keys = await collection.upsert(Note(id=MEMORY_NEW, content="hi"))
 
-    assert keys == "m-new"
+    assert keys == MEMORY_NEW
     assert not [c for c in recorder.calls() if c[0] == "DELETE"]
 
 
 async def test_upsert_failure_reports_the_keys_already_written(collection, recorder):
     recorder.route("GET", "/v1/spaces", spaces_listing("notes"))
-    recorder.route("GET", "/v1/memories/m-2", httpx.Response(404, json={"error": "nope"}))
+    recorder.route("GET", f"/v1/memories/{MEMORY_2}", httpx.Response(404, json={"error": "nope"}))
 
     calls = {"n": 0}
 
     def create(request: httpx.Request) -> httpx.Response:
         calls["n"] += 1
         if calls["n"] == 1:
-            return httpx.Response(201, json=memory_json("m-1", content="first"))
+            return httpx.Response(201, json=memory_json(MEMORY_1, content="first"))
         return httpx.Response(500, json={"error": "down"})
 
     recorder.route("POST", "/v1/memories", create)
 
     with pytest.raises(VectorStoreOperationException) as caught:
-        await collection.upsert([Note(content="first"), Note(id="m-2", content="second")])
+        await collection.upsert([Note(content="first"), Note(id=MEMORY_2, content="second")])
 
-    assert caught.value.__cause__.written_keys == ["m-1"]
+    assert caught.value.__cause__.written_keys == [MEMORY_1]
 
 
 # ---------------------------------------------------------------------------
@@ -244,8 +253,8 @@ async def test_a_reported_problem_flags_the_results_but_keeps_them(collection, r
         "/v1/memories:retrieve",
         ndjson(
             status_event("RERANKING_FAILED", "reranker unavailable"),
-            memory_event("m-1", {"tag": "a"}),
-            chunk_event("c-1", "Ada wrote the first algorithm.", "m-1"),
+            memory_event(MEMORY_1, {"tag": "a"}),
+            chunk_event("c-1", "Ada wrote the first algorithm.", MEMORY_1),
         ),
     )
 
@@ -282,8 +291,8 @@ async def test_an_unknown_status_code_is_surfaced_not_dropped(collection, record
         "/v1/memories:retrieve",
         ndjson(
             status_event("SOMETHING_NEW_IN_A_LATER_SERVER", "unrecognised"),
-            memory_event("m-1"),
-            chunk_event("c-1", "kept", "m-1"),
+            memory_event(MEMORY_1),
+            chunk_event("c-1", "kept", MEMORY_1),
         ),
     )
 
@@ -304,8 +313,8 @@ async def test_feature_disabled_is_informational(collection, recorder):
         "/v1/memories:retrieve",
         ndjson(
             status_event("FEATURE_DISABLED", "no LLM configured"),
-            memory_event("m-1"),
-            chunk_event("c-1", "kept", "m-1"),
+            memory_event(MEMORY_1),
+            chunk_event("c-1", "kept", MEMORY_1),
         ),
     )
 
@@ -319,7 +328,7 @@ async def test_feature_disabled_is_informational(collection, recorder):
 
 async def test_a_truncated_stream_does_not_lose_the_events_before_it(collection, recorder):
     recorder.route("GET", "/v1/spaces", spaces_listing("notes"))
-    good = ndjson(memory_event("m-1"), chunk_event("c-1", "kept", "m-1"))
+    good = ndjson(memory_event(MEMORY_1), chunk_event("c-1", "kept", MEMORY_1))
     recorder.route(
         "POST",
         "/v1/memories:retrieve",
@@ -371,9 +380,9 @@ async def test_two_chunks_of_one_memory_are_two_results(collection, recorder):
         "POST",
         "/v1/memories:retrieve",
         ndjson(
-            memory_event("m-1", {"tag": "a"}),
-            chunk_event("c-1", "first half", "m-1"),
-            chunk_event("c-2", "second half", "m-1"),
+            memory_event(MEMORY_1, {"tag": "a"}),
+            chunk_event("c-1", "first half", MEMORY_1),
+            chunk_event("c-2", "second half", MEMORY_1),
         ),
     )
 
@@ -393,7 +402,7 @@ async def test_vector_scores_are_negated_into_higher_is_better(collection, recor
     recorder.route(
         "POST",
         "/v1/memories:retrieve",
-        ndjson(memory_event("m-1"), chunk_event("c-1", "x", "m-1", score=REAL_VECTOR_SCORE)),
+        ndjson(memory_event(MEMORY_1), chunk_event("c-1", "x", MEMORY_1, score=REAL_VECTOR_SCORE)),
     )
 
     results = await collection.search("x")
@@ -409,14 +418,14 @@ async def test_reranker_scores_are_not_negated(sdk_client, recorder, settings):
     reranked = GoodMemCollection(
         record_type=Note,
         collection_name="notes",
-        settings=settings.model_copy(update={"reranker_id": "r-1"}),
+        settings=settings.model_copy(update={"reranker_id": RERANKER_ID}),
         client=sdk_client,
     )
     recorder.route("GET", "/v1/spaces", spaces_listing("notes"))
     recorder.route(
         "POST",
         "/v1/memories:retrieve",
-        ndjson(memory_event("m-1"), chunk_event("c-1", "x", "m-1", score=0.42)),
+        ndjson(memory_event(MEMORY_1), chunk_event("c-1", "x", MEMORY_1, score=0.42)),
     )
 
     results = await reranked.search("x")
@@ -424,7 +433,7 @@ async def test_reranker_scores_are_not_negated(sdk_client, recorder, settings):
 
     assert records[0].score == pytest.approx(0.42)
     body = recorder.bodies_for("POST", "/v1/memories:retrieve")[0]
-    assert body["postProcessor"]["config"]["reranker_id"] == "r-1"
+    assert body["postProcessor"]["config"]["reranker_id"] == RERANKER_ID
 
 
 # ---------------------------------------------------------------------------
@@ -436,7 +445,9 @@ async def test_a_filter_lambda_becomes_a_server_side_filter(collection, recorder
     """0.2.0 raised NotSupported for any filter at all."""
     recorder.route("GET", "/v1/spaces", spaces_listing("notes"))
     recorder.route(
-        "POST", "/v1/memories:retrieve", ndjson(memory_event("m-1"), chunk_event("c-1", "x", "m-1"))
+        "POST",
+        "/v1/memories:retrieve",
+        ndjson(memory_event(MEMORY_1), chunk_event("c-1", "x", MEMORY_1)),
     )
 
     await collection.search("x", filter=lambda n: n.tag == "ops")
@@ -623,7 +634,7 @@ async def test_listing_collections_follows_pagination(sdk_client, recorder, sett
 
 async def test_a_server_error_carries_the_servers_message(collection, recorder):
     recorder.route("GET", "/v1/spaces", spaces_listing("notes"))
-    recorder.route("GET", "/v1/memories/m-1", httpx.Response(404, json={"error": "nope"}))
+    recorder.route("GET", f"/v1/memories/{MEMORY_1}", httpx.Response(404, json={"error": "nope"}))
     recorder.route(
         "POST",
         "/v1/memories",
@@ -631,7 +642,7 @@ async def test_a_server_error_carries_the_servers_message(collection, recorder):
     )
 
     with pytest.raises(VectorStoreOperationException, match="must be provided"):
-        await collection.upsert(Note(id="m-1", content=""))
+        await collection.upsert(Note(id=MEMORY_1, content=""))
 
 
 async def test_upsert_waits_for_indexing_when_asked(sdk_client, recorder, settings):
@@ -645,7 +656,7 @@ async def test_upsert_waits_for_indexing_when_asked(sdk_client, recorder, settin
     )
     recorder.route("GET", "/v1/spaces", spaces_listing("notes"))
     recorder.route(
-        "POST", "/v1/memories", httpx.Response(201, json=memory_json("m-1", status="PENDING"))
+        "POST", "/v1/memories", httpx.Response(201, json=memory_json(MEMORY_1, status="PENDING"))
     )
 
     statuses = ["PENDING", "PROCESSING", "COMPLETED"]
@@ -654,9 +665,9 @@ async def test_upsert_waits_for_indexing_when_asked(sdk_client, recorder, settin
     def get_memory(request: httpx.Request) -> httpx.Response:
         status = statuses[min(calls["n"], len(statuses) - 1)]
         calls["n"] += 1
-        return httpx.Response(200, json=memory_json("m-1", status=status))
+        return httpx.Response(200, json=memory_json(MEMORY_1, status=status))
 
-    recorder.route("GET", "/v1/memories/m-1", get_memory)
+    recorder.route("GET", f"/v1/memories/{MEMORY_1}", get_memory)
 
     await waiting.upsert(Note(content="hi"))
 
@@ -672,9 +683,11 @@ async def test_an_injected_client_is_not_closed(collection, sdk_client):
 
 async def test_delete_tolerates_a_key_that_is_already_gone(collection, recorder):
     recorder.route("GET", "/v1/spaces", spaces_listing("notes"))
-    recorder.route("DELETE", "/v1/memories/m-1", httpx.Response(404, json={"error": "nope"}))
+    recorder.route(
+        "DELETE", f"/v1/memories/{MEMORY_1}", httpx.Response(404, json={"error": "nope"})
+    )
 
-    await collection.delete(["m-1"])  # must not raise
+    await collection.delete([MEMORY_1])  # must not raise
 
 
 async def test_a_created_space_sends_a_chunking_config(collection, recorder):

@@ -29,6 +29,14 @@ REAL_VECTOR_SCORE = -0.5911163091659546
 
 SPACE_ID = "01a0d16b-bbcd-701c-bfb4-fa306021e078"
 EMBEDDER_ID = "019cfd1c-c033-7517-b7de-f73941a0464b"
+RERANKER_ID = "019cfd94-2844-7117-85ca-1b9919758a27"
+
+# GoodMem ids are UUIDs and the connector refuses anything else, so record
+# keys in tests are real UUIDs too.
+MEMORY_1 = "019cfd1d-5a1e-7a4b-9c3e-2f6a1b0c0e01"
+MEMORY_2 = "019cfd1d-5a1e-7a4b-9c3e-2f6a1b0c0e02"
+MEMORY_NEW = "019cfd1d-5a1e-7a4b-9c3e-2f6a1b0c0e03"
+MEMORY_MISSING = "019cfd1d-5a1e-7a4b-9c3e-2f6a1b0c0e04"
 
 
 @vectorstoremodel
