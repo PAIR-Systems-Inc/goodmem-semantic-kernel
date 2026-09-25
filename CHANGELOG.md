@@ -109,6 +109,34 @@ project file declares no version, so it has nothing to bump.
 - Python: 186 offline (was 36) and 13 live. .NET: 167 (was 47). Java: 143
   (was 23).
 
+### Documentation
+
+Every README snippet and command was executed against a local stand-in for
+the GoodMem server. These were wrong:
+
+- **Option A snippet did not run.** `coll.upsert([...])` passes a list holding
+  `Ellipsis` and failed with `VectorStoreModelSerializationException`.
+  `OpenAIChatCompletion()` with no model id failed with "The OpenAI model ID is
+  required" unless `OPENAI_CHAT_MODEL_ID` was set, and `main()` was never
+  called. It now seeds a real record, names the model and runs.
+- **The sample commands failed.** `OPENAI_API_KEY=...` on its own line sets a
+  shell variable that is not exported, so `example_agent.py` stopped at "Set
+  OPENAI_API_KEY". The configuration block left out `GOODMEM_EMBEDDER_ID`, so
+  all three Python samples failed to create their space. Both are fixed.
+- **The configuration table described Python only.** .NET and Java ignore
+  `GOODMEM_RERANKER_ID`, `GOODMEM_TIMEOUT`, `GOODMEM_WAIT_FOR_INDEXING` and
+  `GOODMEM_INDEXING_TIMEOUT`, and when `GOODMEM_EMBEDDER_ID` is unset they
+  create the space with the first embedder the server lists. The table now
+  says which implementation reads each variable.
+- The intro said all three implement Semantic Kernel's vector store
+  interfaces; Java does not. Filters and rerankers are Python only. The
+  pre-computed-vector note referred to "the same exception" with nothing
+  before it. `search()` defaults to `top=3`, not 5. The injectable client is
+  `goodmem.AsyncGoodmem`; `GoodMemAsyncClient` does not exist. The Maven
+  floor is 3.6.3, which the compiler and surefire plugins require. SDKMAN no
+  longer offers `21.0.5-tem`. The testing section now lists the build and
+  key-gate steps CI runs.
+
 ## 0.3.0
 
 Audit release. Every defect below was reproduced against the `main` tree at
