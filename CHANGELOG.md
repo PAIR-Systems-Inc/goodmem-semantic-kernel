@@ -1,5 +1,63 @@
 # Changelog
 
+## 0.3.1
+
+Security release. Python goes to 0.3.1 and Java to `0.1.1-SNAPSHOT`. The .NET
+project file declares no version, so it has nothing to bump.
+
+### Fixed — Python, .NET and Java
+
+- **A record key could make a request hit a different resource.** Keys are
+  GoodMem memory ids, and the connector puts them in URL paths. In Python the
+  SDK builds `f"/v1/memories/{id}"` and httpx resolves dot segments, so
+  `collection.delete("../spaces/<uuid>")` sent `DELETE /v1/spaces/<uuid>`,
+  which deletes a whole space, and then returned normally. Upserting a record
+  keyed `"../spaces/<uuid>"` sent `GET /v1/spaces/<uuid>`. .NET and Java
+  percent-encode the key, but a bare `..` still got through: .NET sent
+  `DELETE /v1/`, Java sent `DELETE /v1/memories/..`, and Python sent
+  `DELETE /v1`. Encoding is not a guard in any case, because the GoodMem server
+  has been seen decoding `%2e%2e` back into `..`. Every one of these was
+  recorded by a local HTTP server before the fix.
+- Every id that can reach a URL path now goes through one validator per
+  implementation before any request is made: `_ids.require_uuid` (Python),
+  `GoodMemIds.RequireUuid` (.NET) and `GoodMemIds.requireUuid` (Java). The id
+  must be a canonical 8-4-4-4-12 hex UUID and is lowercased. Anything else is
+  refused with an error that names the field. That covers `""`, surrounding
+  whitespace, a `?` or `#` suffix and a trailing newline. Python raises
+  `ValueError`, which Semantic Kernel re-raises as
+  `VectorStoreOperationException`. .NET raises `ArgumentException` and Java
+  raises `IllegalArgumentException`.
+- What is covered: delete (single and batch), upsert (single and batch),
+  get (the ids go in the request body, but are checked the same way), the
+  configured embedder id (and in Python the reranker id), and the space id
+  that `ensure_collection_deleted` reads from the server's space listing
+  before deleting that space. Upsert checks the key before it looks up the
+  space. A batch is checked in full before the first request, so one bad key
+  no longer leaves a batch half deleted or half written. In 0.3.0 all three
+  deleted the valid key before they reached the bad one.
+
+### Changed
+
+- An empty-string key is now refused. Before this release, Python treated it
+  as "no key" and let the server assign one, while .NET and Java sent it as
+  `memoryId: ""`. To let the server assign a key, pass `None` (Python) or
+  `null` (.NET, Java).
+- A configured embedder id that is not a UUID now fails before any request.
+  In Python this is a `VectorStoreInitializationException` that names
+  `GOODMEM_EMBEDDER_ID`. An empty setting still means "not configured".
+
+### Tests
+
+- The new regression tests drive the real stack over TCP to a local server
+  that records every request line. For every entry point listed above, they
+  check that each of 11 malicious payloads is refused with zero requests
+  recorded, and that a valid UUID reaches exactly the intended path. Against
+  0.3.0 they fail: 89 of 94 in Python, 98 of 103 in .NET and 98 of 103 in
+  Java. The ones that pass are the valid-UUID controls.
+- Existing tests that used ids like `"m-1"` now use real UUIDs.
+- Python: 130 offline (was 36) and 13 live. .NET: 167 (was 47). Java: 143
+  (was 23).
+
 ## 0.3.0
 
 Audit release. Every defect below was reproduced against the `main` tree at

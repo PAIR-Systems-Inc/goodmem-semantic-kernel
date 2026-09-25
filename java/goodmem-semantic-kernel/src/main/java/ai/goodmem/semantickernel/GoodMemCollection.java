@@ -7,6 +7,7 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
@@ -134,12 +135,27 @@ public final class GoodMemCollection<T> implements AutoCloseable {
      * the create fails; a failure then raises {@link GoodMemUpsertException} saying
      * whether the restore succeeded.
      *
+     * <p>A {@code null} key lets the server assign one. Any other key must be a UUID;
+     * anything else is refused with {@link IllegalArgumentException} before a request
+     * is made.
+     *
      * @return the server-assigned memory ID
      */
     public Mono<String> upsert(T record) {
-        return resolveSpaceId().flatMap(sid -> {
-            var ser = schema.serialize(record);
+        return Mono.fromCallable(() -> serialize(record))
+                .flatMap(ser -> upsertSerialized(record, ser));
+    }
 
+    /** A null key lets the server assign one; any other key must be a UUID. */
+    private GoodMemSchema.SerializedRecord serialize(T record) {
+        var ser = schema.serialize(record);
+        if (ser.memoryId() == null) return ser;
+        return new GoodMemSchema.SerializedRecord(
+                ser.content(), ser.metadata(), GoodMemIds.requireUuid(ser.memoryId(), "key"));
+    }
+
+    private Mono<String> upsertSerialized(T record, GoodMemSchema.SerializedRecord ser) {
+        return resolveSpaceId().flatMap(sid -> {
             if (ser.memoryId() == null) {
                 return create(sid, ser, record);
             }
@@ -200,11 +216,22 @@ public final class GoodMemCollection<T> implements AutoCloseable {
     /**
      * Upserts multiple records sequentially.
      *
+     * <p>Every key is checked before anything is sent, so one bad key refuses the
+     * whole batch rather than leaving it half written.
+     *
      * @return a {@link Flux} emitting each server-assigned memory ID
      */
     public Flux<String> upsertAll(Iterable<T> records) {
-        return Flux.fromIterable(records).concatMap(this::upsert);
+        return Mono.fromCallable(() -> {
+                    List<Pending<T>> batch = new ArrayList<>();
+                    for (T record : records) batch.add(new Pending<>(record, serialize(record)));
+                    return batch;
+                })
+                .flatMapMany(Flux::fromIterable)
+                .concatMap(p -> upsertSerialized(p.record(), p.serialized()));
     }
+
+    private record Pending<R>(R record, GoodMemSchema.SerializedRecord serialized) {}
 
     /**
      * Retrieves a single record by its memory ID.
@@ -212,7 +239,8 @@ public final class GoodMemCollection<T> implements AutoCloseable {
      * @return the record, or an empty {@link Mono} if not found
      */
     public Mono<T> get(String key) {
-        return client.batchGetMemories(List.of(key))
+        return Mono.fromCallable(() -> GoodMemIds.requireUuid(key, "key"))
+                .flatMap(id -> client.batchGetMemories(List.of(id)))
                 .flatMap(mems -> mems.isEmpty()
                         ? Mono.empty()
                         : Mono.just(schema.deserialize(mems.get(0))));
@@ -225,23 +253,41 @@ public final class GoodMemCollection<T> implements AutoCloseable {
      */
     public Flux<T> getAll(List<String> keys) {
         if (keys.isEmpty()) return Flux.empty();
-        return client.batchGetMemories(keys)
+        // Ids travel in the batchGet body, not the path; checked for consistency.
+        return Mono.fromCallable(() -> requireUuids(keys))
+                .flatMap(client::batchGetMemories)
                 .flatMapMany(Flux::fromIterable)
                 .map(schema::deserialize);
     }
 
     /**
      * Deletes a record by its memory ID. 404 is silently ignored.
+     *
+     * <p>The key is a URL path segment, so it must be a UUID: anything else is refused
+     * with {@link IllegalArgumentException} before a request is made.
      */
     public Mono<Void> delete(String key) {
-        return client.deleteMemory(key);
+        return Mono.fromCallable(() -> GoodMemIds.requireUuid(key, "key"))
+                .flatMap(client::deleteMemory);
     }
 
     /**
      * Deletes multiple records. 404s are silently ignored.
+     *
+     * <p>Every key is checked before the first delete, so one bad key refuses the
+     * whole batch rather than leaving it half deleted.
      */
     public Mono<Void> deleteAll(Iterable<String> keys) {
-        return Flux.fromIterable(keys).concatMap(client::deleteMemory).then();
+        return Mono.fromCallable(() -> requireUuids(keys))
+                .flatMapMany(Flux::fromIterable)
+                .concatMap(client::deleteMemory)
+                .then();
+    }
+
+    private static List<String> requireUuids(Iterable<String> keys) {
+        List<String> ids = new ArrayList<>();
+        for (String key : keys) ids.add(GoodMemIds.requireUuid(key, "key"));
+        return ids;
     }
 
     // ── Search ────────────────────────────────────────────────────────────────
@@ -276,9 +322,20 @@ public final class GoodMemCollection<T> implements AutoCloseable {
     // ── Internal helpers ─────────────────────────────────────────────────────
 
     private Mono<String> resolveSpaceId() {
-        String cached = spaceId.get();
-        if (cached != null) return Mono.just(cached);
+        return Mono.defer(() -> {
+            String cached = spaceId.get();
+            if (cached != null) return Mono.just(cached);
 
+            // Checked before the first request, so a bad setting sends nothing.
+            String configured = options.getEmbedderId();
+            String embedderId = configured != null && !configured.isBlank()
+                    ? GoodMemIds.requireUuid(configured, "embedderId")
+                    : null;
+            return resolveSpaceId(embedderId);
+        });
+    }
+
+    private Mono<String> resolveSpaceId(String configuredEmbedderId) {
         return client.listSpaces(name).flatMap(spaces -> {
             for (ObjectNode space : spaces) {
                 if (name.equals(space.path("name").asText(null))) {
@@ -290,7 +347,7 @@ public final class GoodMemCollection<T> implements AutoCloseable {
                 }
             }
             // Space doesn't exist — create it.
-            return resolveEmbedderId().flatMap(eid ->
+            return resolveEmbedderId(configuredEmbedderId).flatMap(eid ->
                     client.createSpace(name, eid, null)
             ).map(created -> {
                 String sid = created.path("spaceId").asText(null);
@@ -302,9 +359,8 @@ public final class GoodMemCollection<T> implements AutoCloseable {
         });
     }
 
-    private Mono<String> resolveEmbedderId() {
-        String configured = options.getEmbedderId();
-        if (configured != null && !configured.isBlank()) return Mono.just(configured);
+    private Mono<String> resolveEmbedderId(String configured) {
+        if (configured != null) return Mono.just(configured);
 
         return client.listEmbedders().map(embedders -> {
             if (!embedders.isEmpty()) {

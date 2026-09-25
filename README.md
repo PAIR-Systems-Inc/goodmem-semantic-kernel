@@ -159,8 +159,10 @@ Each sample lists its required environment variables in the file header.
 These are the same commands CI runs.
 
 ```bash
-# Python: 36 offline tests. They drive the real SDK over a mock HTTP
-# transport, using event shapes captured from a live server.
+# Python: 130 offline tests. 36 drive the real SDK over a mock HTTP transport,
+# using event shapes captured from a live server. The other 94 drive the whole
+# stack over TCP to a local server that records every request, to check that
+# non-UUID ids are refused before anything is sent.
 pip install -e ".[dev]"
 ruff check python/ && ruff format --check python/
 mypy
@@ -174,10 +176,10 @@ GOODMEM_EMBEDDER_ID=your_embedder_uuid \
 GOODMEM_VERIFY_SSL=false \
   pytest python/tests -q
 
-# .NET: 47 offline tests (3 integration tests skip without GOODMEM_API_KEY)
+# .NET: 167 offline tests (3 integration tests skip without GOODMEM_API_KEY)
 dotnet test dotnet/GoodMem.SemanticKernel.Tests/GoodMem.SemanticKernel.Tests.csproj
 
-# Java: 23 tests against a WireMock server
+# Java: 143 tests, against WireMock and a local recording server
 mvn -f java/pom.xml test
 ```
 
@@ -196,7 +198,7 @@ class Note:
     source: Annotated[str | None, VectorStoreField("data")] = None
 ```
 
-- Exactly one `"key"` field (the memory ID — `None` lets the server generate a UUID).
+- Exactly one `"key"` field (the memory ID — `None` lets the server generate a UUID; any other value must be a UUID).
 - One `"data"` field named `content` becomes the embedded text (`originalContent` in GoodMem).
 - All other `"data"` fields are stored as metadata and returned on search results.
 - `"vector"` fields are accepted for interface compatibility but ignored — GoodMem embeds server-side.
@@ -253,6 +255,7 @@ see [example_single_store.py](samples/python/example_single_store.py)
 
 ## Behavior notes
 
+- **Ids must be UUIDs.** Record keys are GoodMem memory ids, and ids go into request URLs, so a key such as `../spaces/<id>` could otherwise send a delete to a different resource. The connector refuses any key, and any configured embedder or reranker id, that is not a canonical UUID, before it sends anything. Python raises `ValueError`, which Semantic Kernel re-raises as `VectorStoreOperationException`. .NET raises `ArgumentException` and Java raises `IllegalArgumentException`. To let the server assign a key, pass `None` (Python) or `null` (.NET, Java).
 - **No local embedding.** Never pass an `embedding_generator` — GoodMem embeds content server-side. The parameter is accepted for interface compatibility and silently ignored.
 - **Upsert semantics.** GoodMem memories are immutable — there is no update endpoint — so upserting a record that already exists deletes the old memory and creates a new one. The connector reads the current version **before** the delete and writes it back if the create fails, then raises `GoodMemUpsertError` (Python) / `GoodMemUpsertException` (.NET, Java) saying whether the restore succeeded. Semantic Kernel wraps what a collection raises, so in Python the detail is on `__cause__`:
 
@@ -284,13 +287,14 @@ goodmem-semantic-kernel/           ← repo root
 │   ├── goodmem_semantic_kernel/   ← importable Python package
 │   │   ├── __init__.py        # Public exports: GoodMemCollection, GoodMemStore, GoodMemSettings
 │   │   ├── _connection.py     # Owns (or borrows) the official goodmem SDK client
+│   │   ├── _ids.py            # Refuses any id that is not a UUID before it is sent
 │   │   ├── _results.py        # Retrieval statuses, chunk→memory join, score direction
 │   │   ├── _typing.py         # Protocols for the SDK surface this package calls
 │   │   ├── collection.py      # VectorStoreCollection + VectorSearch implementation
 │   │   ├── filters.py         # Builds GoodMem filter expressions safely
 │   │   ├── settings.py        # GoodMemSettings (Pydantic, reads GOODMEM_* env vars)
 │   │   └── store.py           # VectorStore implementation
-│   └── tests/                 # support.py + test_regressions.py + test_e2e.py
+│   └── tests/                 # support.py + test_regressions.py + test_id_validation.py + test_e2e.py
 ├── dotnet/
 │   └── GoodMem.SemanticKernel/    ← .NET connector library
 │   └── GoodMem.SemanticKernel.Tests/
@@ -306,6 +310,7 @@ goodmem-semantic-kernel/           ← repo root
 │           ├── GoodMemData.java         # Annotation: marks content/metadata fields
 │           ├── GoodMemClient.java       # Async HTTP client (GoodMem REST API)
 │           ├── GoodMemOptions.java      # Configuration (reads GOODMEM_* env vars)
+│           ├── GoodMemIds.java          # Refuses any id that is not a UUID before it is sent
 │           └── GoodMemException.java    # Runtime exception wrapper
 ├── samples/
 │   ├── python/                    ← Runnable Python samples
@@ -335,8 +340,8 @@ GoodMemCollection(
 | `ensure_collection_deleted()` | Delete the space and all its memories |
 | `collection_exists()` | Return `True` if the space exists |
 | `upsert(records)` | Write one or a list of records; returns the memory ID(s) |
-| `get(key=...)` / `get(keys=[...])` | Fetch memories by ID |
-| `delete(keys=[...])` | Delete memories by ID |
+| `get(key=...)` / `get(keys=[...])` | Fetch memories by ID (each a UUID) |
+| `delete(keys=[...])` | Delete memories by ID (each a UUID) |
 | `search(query, top=5)` | Semantic search; returns `KernelSearchResults` |
 | `create_search_function(...)` | Wrap search as a `KernelFunction` for use in agent plugins |
 

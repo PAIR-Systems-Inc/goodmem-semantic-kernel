@@ -37,6 +37,7 @@ else:
 
 from goodmem_semantic_kernel import filters as gm_filters
 from goodmem_semantic_kernel._connection import GoodMemConnection
+from goodmem_semantic_kernel._ids import require_uuid
 from goodmem_semantic_kernel._results import (
     classify,
     hits_from_events,
@@ -195,6 +196,13 @@ class GoodMemCollection(
         if name in cache:
             return cache[name]
 
+        configured = self.settings.embedder_id
+        if configured:
+            try:
+                configured = require_uuid(configured, "embedder_id (GOODMEM_EMBEDDER_ID)")
+            except ValueError as exc:
+                raise VectorStoreInitializationException(str(exc)) from exc
+
         matches = [
             space
             async for space in await self._client.spaces.list(name_filter=name, max_items=1000)
@@ -207,7 +215,6 @@ class GoodMemCollection(
             )
         if matches:
             space = matches[0]
-            configured = self.settings.embedder_id
             if configured:
                 existing = {e.embedder_id for e in (space.space_embedders or []) if e.embedder_id}
                 if existing and configured not in existing:
@@ -221,7 +228,7 @@ class GoodMemCollection(
             cache[name] = space.space_id
             return space.space_id
 
-        embedder_id = self.settings.embedder_id
+        embedder_id = configured
         if not embedder_id:
             raise VectorStoreInitializationException(
                 f"Cannot create the GoodMem space {name!r}: no embedder is "
@@ -239,6 +246,7 @@ class GoodMemCollection(
 
     async def _wait_for_indexing(self, memory_id: str) -> None:
         """Block until a memory finishes indexing, or the timeout elapses."""
+        memory_id = require_uuid(memory_id, "memory_id")
         deadline = time.monotonic() + self.settings.indexing_timeout
         while True:
             memory = await self._client.memories.get(id=memory_id)
@@ -288,7 +296,9 @@ class GoodMemCollection(
                 "originalContent": (record.get(content_sname) if content_sname else "") or "",
                 "contentType": "text/plain",
             }
-            if key_val:
+            # None lets the server assign an id. Anything else, "" included,
+            # is a key and must pass the UUID check in _inner_upsert.
+            if key_val is not None:
                 store_model["memoryId"] = str(key_val)
             if metadata:
                 store_model["metadata"] = metadata
@@ -354,7 +364,7 @@ class GoodMemCollection(
             name_filter=self.collection_name, max_items=1000
         ):
             if space.name == self.collection_name:
-                await self._client.spaces.delete(id=space.space_id)
+                await self._client.spaces.delete(id=require_uuid(space.space_id, "space_id"))
                 self._space_id_cache.pop(self.collection_name, None)  # type: ignore[attr-defined]
                 return
 
@@ -434,12 +444,19 @@ class GoodMemCollection(
         records: Sequence[Any],
         **kwargs: Any,
     ) -> Sequence[TKey]:
-        """Write records to GoodMem, keeping already-written keys on failure."""
+        """Write records to GoodMem, keeping already-written keys on failure.
+
+        Every key is checked before anything is sent, so one bad key refuses
+        the whole batch rather than leaving it half written.
+        """
+        memory_ids = [
+            None if model.get("memoryId") is None else require_uuid(model["memoryId"], "key")
+            for model in records
+        ]
         space_id = await self._resolve_space_id()
         keys: list[str] = []
 
-        for store_model in records:
-            memory_id: str | None = store_model.get("memoryId")
+        for store_model, memory_id in zip(records, memory_ids, strict=True):
             try:
                 if memory_id and await self._exists(memory_id):
                     returned = await self._replace_existing(space_id, memory_id, store_model, keys)
@@ -482,9 +499,9 @@ class GoodMemCollection(
         if not keys:
             return None
 
-        response = await self._client.memories.batch_get(
-            memory_ids=list(keys), include_content=True
-        )
+        # Ids travel in the body here, not the path; checked for consistency.
+        keys = [require_uuid(key, "key") for key in keys]
+        response = await self._client.memories.batch_get(memory_ids=keys, include_content=True)
         by_id: dict[str, dict[str, Any]] = {}
         for result in response.results or []:
             if not result.success or result.memory is None:
@@ -504,10 +521,15 @@ class GoodMemCollection(
 
     @override
     async def _inner_delete(self, keys: Sequence[TKey], **kwargs: Any) -> None:
-        """Delete memories by key, tolerating keys that are already gone."""
-        for key in keys:
+        """Delete memories by key, tolerating keys that are already gone.
+
+        Every key is checked before the first delete: a key is a URL path
+        segment, and ``"../spaces/<id>"`` would otherwise delete a whole space.
+        """
+        memory_ids = [require_uuid(key, "key") for key in keys]
+        for memory_id in memory_ids:
             try:
-                await self._client.memories.delete(id=key)
+                await self._client.memories.delete(id=memory_id)
             except NotFoundError:
                 continue
 
@@ -539,6 +561,10 @@ class GoodMemCollection(
                 "embed it server-side."
             )
 
+        reranker_id = self.settings.reranker_id
+        if reranker_id:
+            reranker_id = require_uuid(reranker_id, "reranker_id")
+
         space_id = await self._resolve_space_id()
         space_key: dict[str, Any] = {"spaceId": space_id}
         if filter_expression := self._build_filter(options.filter):
@@ -548,7 +574,6 @@ class GoodMemCollection(
                 else gm_filters.all_of(*filter_expression)
             )
 
-        reranker_id = self.settings.reranker_id
         request: dict[str, Any] = {
             "message": str(values) if values is not None else "",
             "space_keys": [space_key],
