@@ -36,6 +36,47 @@ project file declares no version, so it has nothing to bump.
   no longer leaves a batch half deleted or half written. In 0.3.0 all three
   deleted the valid key before they reached the bad one.
 
+### Fixed — Python, after review of the fix above
+
+- **An id could pass the check and still change the path.** `require_uuid`
+  checked the string and then returned `value.lower()`, which a `str` subclass
+  can override. A key whose text is a UUID but whose `lower()` returns
+  `"../spaces/<uuid>"` made `collection.delete(key)` send
+  `DELETE /v1/spaces/<uuid>`. The same happened with a `uuid.UUID` subclass
+  whose `str()` returns such a string, and with a subclass whose `__format__`
+  lies, because the SDK builds the path with an f-string. Through `upsert`, a
+  key whose `str()` returns one sent `GET /v1/spaces/<uuid>`. The validator
+  now returns a new, plain `str` made with `str.lower`, so no method of the
+  caller's object runs after the check. It also tests the type with `type()`
+  rather than `isinstance()`, so an object that only claims to be a `str` gets
+  the usual refusal instead of a `TypeError`. Only code inside the process can
+  pass such an object. An id from a model, an HTTP request, JSON or the
+  environment is always a plain `str`. .NET and Java strings are sealed and
+  final, so those implementations are not affected.
+- **`ensure_collection_deleted` raised a bare `ValueError`** when the server
+  listed the space under an id that is not a UUID. It now raises
+  `VectorStoreOperationException`, like every other refusal, and still deletes
+  nothing. `GoodMemStore.ensure_collection_deleted(name)` now overrides
+  Semantic Kernel's default, because the default swallows
+  `VectorStoreOperationException` and would have reported the refused delete
+  as done.
+- **A create that answered with an id that is not a UUID.** With
+  `wait_for_indexing` on, the id was refused only when the connector polled
+  for indexing. By then every create in the batch had been sent, and the
+  records before it had been polled. The error said the id "was not sent",
+  although the record was on the server, and it arrived as a plain wrapped
+  `ValueError` without `written_keys`. With `wait_for_indexing` off, `upsert` returned the id as a
+  key and raised nothing. Now the id is checked as soon as the create answers.
+  `upsert` raises `VectorStoreOperationException` with a `GoodMemUpsertError`
+  on `__cause__`. Its message says the record was written, and `written_keys`
+  lists the records written before it. Nothing more is sent. Ids the server
+  returns are now lowercased like every other id.
+- README: the embedder-id case was documented as a
+  `VectorStoreOperationException`. It is a `VectorStoreInitializationException`,
+  which `except VectorStoreOperationException` does not catch. Every Python
+  case is now listed. The Option C link pointed to `example_single_store.py`,
+  which does not exist; it now points to `example_store.py`.
+
 ### Changed
 
 - An empty-string key is now refused. Before this release, Python treated it
@@ -54,8 +95,18 @@ project file declares no version, so it has nothing to bump.
   recorded, and that a valid UUID reaches exactly the intended path. Against
   0.3.0 they fail: 89 of 94 in Python, 98 of 103 in .NET and 98 of 103 in
   Java. The ones that pass are the valid-UUID controls.
+- The review added 56 Python tests to the same file. They cover `str` and
+  `uuid.UUID` subclasses that lie through `delete` (single and batch),
+  `upsert`, `get` and the validator itself; the error type and the store path
+  for a listed space id; and a create that answers with each payload, with
+  `wait_for_indexing` on and off. The file now has 150 tests. Against the
+  first version of this fix, 59 of the 150 fail. The 91 that pass there are
+  the earlier tests left unchanged, a valid-id control and the cases that were
+  not holes, such as a subclass that only overrides `__str__` passed to
+  `delete`. Two valid-id controls fail there because that version returned an
+  upper-case id from the server unchanged. Against 0.3.0, 131 fail.
 - Existing tests that used ids like `"m-1"` now use real UUIDs.
-- Python: 130 offline (was 36) and 13 live. .NET: 167 (was 47). Java: 143
+- Python: 186 offline (was 36) and 13 live. .NET: 167 (was 47). Java: 143
   (was 23).
 
 ## 0.3.0

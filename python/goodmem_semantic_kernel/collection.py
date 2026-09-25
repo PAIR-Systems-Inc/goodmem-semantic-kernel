@@ -37,7 +37,7 @@ else:
 
 from goodmem_semantic_kernel import filters as gm_filters
 from goodmem_semantic_kernel._connection import GoodMemConnection
-from goodmem_semantic_kernel._ids import require_uuid
+from goodmem_semantic_kernel._ids import canonical_uuid, describe, require_uuid
 from goodmem_semantic_kernel._results import (
     classify,
     hits_from_events,
@@ -359,12 +359,24 @@ class GoodMemCollection(
 
     @override
     async def ensure_collection_deleted(self, **kwargs: Any) -> None:
-        """Delete the GoodMem space for this collection, if it exists."""
+        """Delete the GoodMem space for this collection, if it exists.
+
+        Raises:
+            VectorStoreOperationException: The server listed the space with an
+                id that is not a UUID. Nothing is deleted: the id would be the
+                path of ``DELETE /v1/spaces/{id}``.
+        """
         async for space in await self._client.spaces.list(
             name_filter=self.collection_name, max_items=1000
         ):
             if space.name == self.collection_name:
-                await self._client.spaces.delete(id=require_uuid(space.space_id, "space_id"))
+                try:
+                    space_id = require_uuid(space.space_id, "space_id")
+                except ValueError as exc:
+                    raise VectorStoreOperationException(
+                        f"GoodMem space {self.collection_name!r} was not deleted: {exc}"
+                    ) from exc
+                await self._client.spaces.delete(id=space_id)
                 self._space_id_cache.pop(self.collection_name, None)  # type: ignore[attr-defined]
                 return
 
@@ -468,7 +480,20 @@ class GoodMemCollection(
                 raise GoodMemUpsertError(
                     f"Writing to GoodMem failed: {exc}", written_keys=keys
                 ) from exc
-            keys.append(returned)
+            # The server's id is used as a path when waiting for indexing, and
+            # the caller will use it as a key. The record is already written,
+            # so this is reported as a partial upsert, not a refused one.
+            key = canonical_uuid(returned)
+            if key is None:
+                raise GoodMemUpsertError(
+                    f"GoodMem wrote record {len(keys) + 1} of {len(records)} but "
+                    f"returned {describe(returned)} as its memory id, which is not a "
+                    "UUID. That record is on the server; the connector has not used "
+                    "its id in any request and wrote no record after it. "
+                    "written_keys lists the records written before it.",
+                    written_keys=keys,
+                )
+            keys.append(key)
 
         if self.settings.wait_for_indexing:
             for key in keys:

@@ -159,10 +159,10 @@ Each sample lists its required environment variables in the file header.
 These are the same commands CI runs.
 
 ```bash
-# Python: 130 offline tests. 36 drive the real SDK over a mock HTTP transport,
-# using event shapes captured from a live server. The other 94 drive the whole
+# Python: 186 offline tests. 36 drive the real SDK over a mock HTTP transport,
+# using event shapes captured from a live server. The other 150 drive the whole
 # stack over TCP to a local server that records every request, to check that
-# non-UUID ids are refused before anything is sent.
+# no id reaches a request path unless it is a UUID.
 pip install -e ".[dev]"
 ruff check python/ && ruff format --check python/
 mypy
@@ -251,11 +251,16 @@ see [example_single_collection.py](samples/python/example_single_collection.py)
 
 ### Option C: Store (multiple collections, shared connection)
 
-see [example_single_store.py](samples/python/example_single_store.py)
+see [example_store.py](samples/python/example_store.py)
 
 ## Behavior notes
 
-- **Ids must be UUIDs.** Record keys are GoodMem memory ids, and ids go into request URLs, so a key such as `../spaces/<id>` could otherwise send a delete to a different resource. The connector refuses any key, and any configured embedder or reranker id, that is not a canonical UUID, before it sends anything. Python raises `ValueError`, which Semantic Kernel re-raises as `VectorStoreOperationException`. .NET raises `ArgumentException` and Java raises `IllegalArgumentException`. To let the server assign a key, pass `None` (Python) or `null` (.NET, Java).
+- **Ids must be UUIDs.** Record keys are GoodMem memory ids, and ids go into request URLs, so a key such as `../spaces/<id>` could otherwise send a delete to a different resource. The connector refuses any key, and any configured embedder or reranker id, that is not a canonical UUID, before it sends anything. It also never puts a space or memory id that the server returned into a URL unless that id is a UUID. .NET raises `ArgumentException` and Java raises `IllegalArgumentException`. To let the server assign a key, pass `None` (Python) or `null` (.NET, Java). In Python the exception depends on what was refused:
+  - A key passed to `get`, `upsert` or `delete` raises `VectorStoreOperationException`. The connector raises `ValueError`, and Semantic Kernel wraps it.
+  - `GOODMEM_RERANKER_ID` raises `VectorSearchExecutionException` from `search`. That is a subclass of `VectorStoreOperationException`.
+  - `GOODMEM_EMBEDDER_ID` raises `VectorStoreInitializationException` from `ensure_collection_exists`. That is **not** a `VectorStoreOperationException`, so `except VectorStoreOperationException` does not catch it. Semantic Kernel wraps it in `VectorStoreOperationException` when `upsert` hits it first, and in `VectorSearchExecutionException` when `search` does.
+  - A space id the server listed that is not a UUID makes `ensure_collection_deleted` raise `VectorStoreOperationException` and delete nothing. `GoodMemStore.ensure_collection_deleted(name)` raises it too, where Semantic Kernel's default would have swallowed it.
+  - A memory id that is not a UUID in the server's answer to a create makes `upsert` raise `VectorStoreOperationException`. Its `__cause__` is a `GoodMemUpsertError`: that record was written, and `written_keys` lists the records written before it.
 - **No local embedding.** Never pass an `embedding_generator` — GoodMem embeds content server-side. The parameter is accepted for interface compatibility and silently ignored.
 - **Upsert semantics.** GoodMem memories are immutable — there is no update endpoint — so upserting a record that already exists deletes the old memory and creates a new one. The connector reads the current version **before** the delete and writes it back if the create fails, then raises `GoodMemUpsertError` (Python) / `GoodMemUpsertException` (.NET, Java) saying whether the restore succeeded. Semantic Kernel wraps what a collection raises, so in Python the detail is on `__cause__`:
 
@@ -357,6 +362,7 @@ GoodMemStore(settings=GoodMemSettings())
 |---|---|
 | `get_collection(record_type, collection_name=...)` | Return a `GoodMemCollection` |
 | `list_collection_names()` | List all GoodMem spaces visible to this API key |
+| `ensure_collection_deleted(collection_name)` | Delete the named space, if it exists. A refused delete raises instead of passing silently |
 
 ### `GoodMemSettings`
 

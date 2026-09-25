@@ -12,9 +12,46 @@ from __future__ import annotations
 
 import re
 import uuid
+from typing import cast
 
 # fullmatch, not ^...$: in Python, $ also matches before a trailing newline.
 _UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+
+
+def canonical_uuid(value: object) -> str | None:
+    """Return ``value`` as a plain lowercase UUID string, or ``None``.
+
+    What comes back is always a new, exact ``str``, never ``value`` itself. A
+    ``str`` subclass can override ``lower()``, ``__str__`` or ``__format__``
+    and hand the SDK a different string from the one that was checked, so no
+    method of ``value`` is called after the check.
+    """
+    # type(), not isinstance(): isinstance() believes an object that fakes
+    # its __class__.
+    if issubclass(type(value), uuid.UUID):
+        try:
+            value = str(value)
+        except Exception:
+            return None
+    if not issubclass(type(value), str):
+        return None
+    text = cast(str, value)
+    if _UUID.fullmatch(text) is None:
+        return None
+    # str.lower, not text.lower(): the base method, which returns an exact str.
+    return str.lower(text)
+
+
+def describe(value: object) -> str:
+    """Show an id in an error message, shortened so a huge one stays readable."""
+    if issubclass(type(value), str):
+        shown = repr(str.__str__(cast(str, value)))
+    else:
+        try:
+            shown = str.__str__(repr(value))
+        except Exception:
+            shown = f"a {type(value).__name__}"
+    return shown if len(shown) <= 80 else shown[:77] + "..."
 
 
 def require_uuid(value: object, field: str) -> str:
@@ -23,13 +60,10 @@ def require_uuid(value: object, field: str) -> str:
     ``field`` names the argument or setting in the error, so the caller can
     tell which id was wrong.
     """
-    text = str(value) if isinstance(value, uuid.UUID) else value
-    if isinstance(text, str) and _UUID.fullmatch(text):
-        return text.lower()
-    shown = repr(value)
-    if len(shown) > 80:
-        shown = shown[:77] + "..."
+    canonical = canonical_uuid(value)
+    if canonical is not None:
+        return canonical
     raise ValueError(
-        f"{field} must be a GoodMem UUID, got {shown}. It was not sent: GoodMem "
+        f"{field} must be a GoodMem UUID, got {describe(value)}. It was not sent: GoodMem "
         "ids are UUIDs, and any other value can change which URL a request goes to."
     )

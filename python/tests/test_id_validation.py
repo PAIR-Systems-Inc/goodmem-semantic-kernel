@@ -23,9 +23,24 @@ from semantic_kernel.exceptions.vector_store_exceptions import (
     VectorStoreInitializationException,
     VectorStoreOperationException,
 )
-from support import EMBEDDER_ID, MEMORY_NEW, RERANKER_ID, SPACE_ID, Note, memory_json, space_json
+from support import (
+    EMBEDDER_ID,
+    MEMORY_1,
+    MEMORY_2,
+    MEMORY_NEW,
+    RERANKER_ID,
+    SPACE_ID,
+    Note,
+    memory_json,
+    space_json,
+)
 
-from goodmem_semantic_kernel import GoodMemCollection, GoodMemSettings
+from goodmem_semantic_kernel import (
+    GoodMemCollection,
+    GoodMemSettings,
+    GoodMemStore,
+    GoodMemUpsertError,
+)
 
 U = "0198c3a2-7f4e-7c1a-9b2d-5e6f7a8b9c0d"
 
@@ -49,6 +64,9 @@ SETTING_PAYLOADS = [p for p in PAYLOADS if p]
 
 REFUSAL = "must be a GoodMem UUID"
 
+# The one request made before an id from the server can be checked.
+LISTING = ("GET", "/v1/spaces?name_filter=notes")
+
 
 class RecordingServer:
     """A local HTTP server that records every request line it receives."""
@@ -57,6 +75,9 @@ class RecordingServer:
         self.requests: list[tuple[str, str]] = []
         self.bodies: list[dict[str, Any]] = []
         self.listed_space_id = SPACE_ID
+        # Ids a create answers with, in order; when empty it echoes the key.
+        self.returned_memory_ids: list[str] = []
+        self.created: set[str] = set()
         server = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -106,8 +127,14 @@ class RecordingServer:
         if method == "POST" and route == "/v1/memories:retrieve":
             return 200, "", "application/x-ndjson"
         if method == "POST" and route == "/v1/memories":
-            memory_id = body.get("memoryId") or MEMORY_NEW
+            if self.returned_memory_ids:
+                memory_id = self.returned_memory_ids.pop(0)
+            else:
+                memory_id = body.get("memoryId") or MEMORY_NEW
+            self.created.add(memory_id.lower())
             return 201, memory_json(memory_id, content="x"), "application/json"
+        if method == "GET" and route.removeprefix("/v1/memories/") in self.created:
+            return 200, memory_json(route.removeprefix("/v1/memories/")), "application/json"
         if method == "DELETE":
             return 204, "", "application/json"
         return 404, {"error": f"no route for {method} {path}"}, "application/json"
@@ -231,10 +258,7 @@ async def test_upsert_with_a_uuid_key_reaches_exactly_that_memory(server, make_c
     key = await make_collection().upsert(Note(id=U, content="x"))
 
     assert key == U
-    assert [r for r in server.requests if not r[1].startswith("/v1/spaces")] == [
-        ("GET", f"/v1/memories/{U}"),
-        ("POST", "/v1/memories"),
-    ]
+    assert server.requests == [LISTING, ("GET", f"/v1/memories/{U}"), ("POST", "/v1/memories")]
     assert server.bodies[-1]["memoryId"] == U
 
 
@@ -320,14 +344,185 @@ async def test_a_non_uuid_space_id_from_the_server_is_never_deleted(
 
     error = await outcome(collection.ensure_collection_deleted)
 
-    assert not [r for r in server.requests if r[0] == "DELETE"], server.requests
-    assert isinstance(error, ValueError) and REFUSAL in str(error), repr(error)
+    # Only the listing: nothing is sent with the listed id.
+    assert server.requests == [LISTING], server.requests
+    # A Semantic Kernel exception like every other refusal, not a bare ValueError.
+    assert isinstance(error, VectorStoreOperationException), repr(error)
+    assert REFUSAL in str(error) and "not deleted" in str(error), str(error)
+
+
+@pytest.mark.parametrize("payload", SETTING_PAYLOADS)
+async def test_the_store_does_not_hide_a_refused_space_delete(payload, server):
+    """Semantic Kernel's VectorStore.ensure_collection_deleted swallows
+    VectorStoreOperationException; a refused delete must not look like a done one."""
+    server.listed_space_id = payload
+    store = GoodMemStore(settings=GoodMemSettings(base_url=server.url, api_key="test-key"))
+    try:
+        error = await outcome(lambda: store.ensure_collection_deleted("notes"))
+    finally:
+        await store.__aexit__(None, None, None)
+
+    assert server.requests == [LISTING], server.requests
+    assert isinstance(error, VectorStoreOperationException), repr(error)
+    assert REFUSAL in str(error), str(error)
 
 
 async def test_ensure_collection_deleted_deletes_exactly_the_listed_space(server, make_collection):
     await make_collection().ensure_collection_deleted()
 
     assert server.requests[-1] == ("DELETE", f"/v1/spaces/{SPACE_ID}")
+
+
+async def test_the_store_deletes_exactly_the_listed_space(server):
+    store = GoodMemStore(settings=GoodMemSettings(base_url=server.url, api_key="test-key"))
+    try:
+        await store.ensure_collection_deleted("notes")
+    finally:
+        await store.__aexit__(None, None, None)
+
+    assert server.requests == [LISTING, ("DELETE", f"/v1/spaces/{SPACE_ID}")]
+
+
+# ---------------------------------------------------------------------------
+# Ids from the server: the memory id a create answers with
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("wait_for_indexing", [True, False])
+@pytest.mark.parametrize("payload", PAYLOADS)
+async def test_a_non_uuid_memory_id_from_create_is_reported_as_a_partial_write(
+    payload, wait_for_indexing, server, make_collection
+):
+    # The first record gets a real id; the server answers the second with the payload.
+    server.returned_memory_ids = [MEMORY_1, payload]
+    collection = make_collection(wait_for_indexing=wait_for_indexing)
+
+    error = await outcome(
+        lambda: collection.upsert([Note(content="first"), Note(content="second")])
+    )
+
+    # Both creates were sent, and nothing after them: the returned id is
+    # never used in a path, not even to wait for the first record's indexing.
+    assert server.requests == [
+        LISTING,
+        ("POST", "/v1/memories"),
+        ("POST", "/v1/memories"),
+    ], server.requests
+    assert isinstance(error, VectorStoreOperationException), repr(error)
+    detail = error.__cause__
+    assert isinstance(detail, GoodMemUpsertError), repr(detail)
+    # The first record is reported as written, and the message does not claim
+    # the second one was not sent: it was, and it is on the server.
+    assert detail.written_keys == [MEMORY_1]
+    assert "not a UUID" in str(detail) and "record 2 of 2" in str(detail), str(detail)
+    assert "was not sent" not in str(detail), str(detail)
+
+
+@pytest.mark.parametrize("wait_for_indexing", [True, False])
+async def test_uuid_memory_ids_from_create_are_returned_and_waited_on(
+    wait_for_indexing, server, make_collection
+):
+    server.returned_memory_ids = [MEMORY_1.upper(), MEMORY_2]
+    collection = make_collection(wait_for_indexing=wait_for_indexing)
+
+    keys = await collection.upsert([Note(content="first"), Note(content="second")])
+
+    assert keys == [MEMORY_1, MEMORY_2]
+    expected = [LISTING, ("POST", "/v1/memories"), ("POST", "/v1/memories")]
+    if wait_for_indexing:
+        expected += [("GET", f"/v1/memories/{MEMORY_1}"), ("GET", f"/v1/memories/{MEMORY_2}")]
+    assert server.requests == expected
+
+
+# ---------------------------------------------------------------------------
+# In-process objects that pass the check and then change what is sent
+# ---------------------------------------------------------------------------
+
+TRAVERSAL = f"../spaces/{U}"
+
+
+class LowerLies(str):
+    """Is a UUID when checked; lowercasing it gives a traversal."""
+
+    def lower(self) -> str:
+        return TRAVERSAL
+
+
+class FormatLies(str):
+    """Is a UUID when checked; lowercases to itself and formats as a traversal,
+    which is what the SDK's f-string path calls."""
+
+    def lower(self) -> str:
+        return self
+
+    def __format__(self, spec: str) -> str:
+        return TRAVERSAL
+
+
+class StrLies(str):
+    """Its str() is a LowerLies, as a key goes through str() when serialized."""
+
+    def __str__(self) -> str:
+        return LowerLies(U)
+
+
+class UuidLies(uuid.UUID):
+    """A uuid.UUID whose str() is a LowerLies."""
+
+    def __str__(self) -> str:
+        return LowerLies(U)
+
+
+HOSTILE = {
+    "lower": lambda: LowerLies(U),
+    "format": lambda: FormatLies(U),
+    "str": lambda: StrLies(U),
+    "uuid": lambda: UuidLies(U),
+}
+
+
+@pytest.mark.parametrize("make", HOSTILE.values(), ids=HOSTILE.keys())
+async def test_delete_sends_the_checked_uuid_not_the_callers_object(make, server, make_collection):
+    await make_collection().delete(make())
+
+    assert server.requests == [("DELETE", f"/v1/memories/{U}")]
+
+
+@pytest.mark.parametrize("make", HOSTILE.values(), ids=HOSTILE.keys())
+async def test_batch_delete_sends_the_checked_uuids(make, server, make_collection):
+    await make_collection().delete([make(), make()])
+
+    assert server.requests == [("DELETE", f"/v1/memories/{U}")] * 2
+
+
+@pytest.mark.parametrize("make", HOSTILE.values(), ids=HOSTILE.keys())
+async def test_upsert_sends_the_checked_uuid(make, server, make_collection):
+    await make_collection().upsert(Note(id=make(), content="x"))
+
+    assert server.requests == [LISTING, ("GET", f"/v1/memories/{U}"), ("POST", "/v1/memories")]
+    assert server.bodies[-1]["memoryId"] == U
+
+
+@pytest.mark.parametrize("make", HOSTILE.values(), ids=HOSTILE.keys())
+async def test_get_asks_for_the_checked_uuid(make, server, make_collection):
+    await make_collection().get(keys=[make()])
+
+    assert server.requests == [("POST", "/v1/memories:batchGet")]
+    assert server.bodies[0]["memoryIds"] == [U]
+
+
+class PretendsToBeAStr:
+    """isinstance(x, str) is True for this, though it is not a str."""
+
+    @property
+    def __class__(self) -> type:
+        return str
+
+
+async def test_an_object_that_only_claims_to_be_a_str_is_refused(server, make_collection):
+    error = await outcome(lambda: make_collection().delete(PretendsToBeAStr()))
+
+    assert_refused(error, server, VectorStoreOperationException)
 
 
 # ---------------------------------------------------------------------------
@@ -343,3 +538,16 @@ def test_the_validator_normalises_uuids_and_refuses_everything_else():
     for payload in [*PAYLOADS, None, 42, f"{U} ", U.replace("-", ""), f"{{{U}}}"]:
         with pytest.raises(ValueError, match=f"key {REFUSAL}"):
             require_uuid(payload, "key")
+    with pytest.raises(ValueError, match=f"key {REFUSAL}"):
+        require_uuid(PretendsToBeAStr(), "key")
+
+
+@pytest.mark.parametrize("make", HOSTILE.values(), ids=HOSTILE.keys())
+def test_the_validator_returns_a_plain_str_whatever_it_was_given(make):
+    from goodmem_semantic_kernel._ids import require_uuid
+
+    checked = require_uuid(make(), "key")
+
+    # An exact str: nothing the caller's object overrides can run on it later.
+    assert type(checked) is str
+    assert checked == U and f"{checked}" == U and checked.lower() == U
