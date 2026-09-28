@@ -241,7 +241,7 @@ class GoodMemClientTest {
                 .willReturn(ok(ndjson).withHeader("Content-Type", "application/x-ndjson")));
 
         List<GoodMemClient.RetrieveResult> results =
-                client(wm).retrieveMemories("capital cities", List.of("space-1"), 3).block();
+                client(wm).retrieveMemories("capital cities", List.of("space-1"), 3).block().results();
 
         assertThat(results).hasSize(1);
         GoodMemClient.RetrieveResult r = results.get(0);
@@ -257,7 +257,7 @@ class GoodMemClientTest {
                 .willReturn(ok("").withHeader("Content-Type", "application/x-ndjson")));
 
         List<GoodMemClient.RetrieveResult> results =
-                client(wm).retrieveMemories("query", List.of("space-1"), 5).block();
+                client(wm).retrieveMemories("query", List.of("space-1"), 5).block().results();
 
         assertThat(results).isEmpty();
     }

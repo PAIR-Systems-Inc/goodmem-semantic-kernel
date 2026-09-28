@@ -1,0 +1,5 @@
+{"status":{"code":"NOT_FOUND","message":"Reranker validation failed: Exception: Reranker not found: 00000000-0000-7000-8000-000000000000 (ID: 00000000-0000-7000-8000-000000000000). Verify the reranker exists and is accessible.","details":{"reranker_id":"00000000-0000-7000-8000-000000000000"}}}
+{"status":{"code":"FEATURE_DISABLED","message":"Abstract reply generation disabled: no LLM configured. Add 'llm_id' parameter to enable AI-generated summaries.","details":{"required_param":"llm_id","feature":"summarization"}}}
+{"status":{"code":"RERANKING_FAILED","message":"Failed to create reranker client: Exception: Reranker not found: 00000000-0000-7000-8000-000000000000","details":{"reranker_id":"00000000-0000-7000-8000-000000000000"}}}
+{"resultSetBoundary":{"resultSetId":"01a0d44b-97e3-7017-9142-32a21266d941","kind":"BEGIN","stageName":"retrieve"}}
+{"resultSetBoundary":{"resultSetId":"01a0d44b-97e3-7017-9142-32a21266d941","kind":"END","stageName":""}}

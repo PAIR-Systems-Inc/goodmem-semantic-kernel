@@ -1,5 +1,6 @@
 package ai.goodmem.semantickernel;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -190,12 +191,18 @@ final class GoodMemClient implements AutoCloseable {
      *   <li>{@code {"memoryDefinition": {...}}} — arrives indexed by position 0, 1, 2, …
      *   <li>{@code {"retrievedItem": {"chunk": {"memoryIndex": N, "relevanceScore": …}}}}
      *       — references a memory definition by index
+     *   <li>{@code {"status": {"code": …, "message": …, "details": {…}}}} — a problem or a
+     *       notice; see {@link RetrievalStatuses}
      * </ul>
+     *
+     * <p>A status never removes a result and never raises. A line that cannot be parsed is
+     * reported as {@code MALFORMED_STREAM} rather than skipped, so a broken stream does not
+     * read as a complete one.
      *
      * <p>Scores are negated before returning: GoodMem uses lower-is-better (distance),
      * SK uses higher-is-better (similarity).
      */
-    Mono<List<RetrieveResult>> retrieveMemories(String query, List<String> spaceIds, int top) {
+    Mono<RetrieveResponse> retrieveMemories(String query, List<String> spaceIds, int top) {
         return Mono.fromCallable(() -> {
             ObjectNode payload = MAPPER.createObjectNode()
                     .put("message", query)
@@ -215,13 +222,35 @@ final class GoodMemClient implements AutoCloseable {
 
             List<ObjectNode> memoryList = new ArrayList<>();
             List<ObjectNode> chunkRefs  = new ArrayList<>();
+            List<GoodMemRetrievalStatus> statuses = new ArrayList<>();
 
+            int lineNumber = 0;
             for (String line : response.body().split("\n")) {
+                lineNumber++;
                 String trimmed = line.strip();
                 if (trimmed.isEmpty()) continue;
 
                 JsonNode evt;
-                try { evt = MAPPER.readTree(trimmed); } catch (Exception e) { continue; }
+                try {
+                    evt = MAPPER.readTree(trimmed);
+                    if (evt == null || !evt.isObject())
+                        throw new IllegalArgumentException("the line is not an event object");
+                } catch (Exception e) {
+                    // Keep every event around the bad line, and report it the way a server
+                    // status is reported: a truncated stream must not read as a complete one.
+                    String reason = e instanceof JsonProcessingException jpe
+                            ? jpe.getOriginalMessage() // without Jackson's multi-line location suffix
+                            : e.getMessage();
+                    statuses.add(RetrievalStatuses.malformed(
+                            "Line " + lineNumber + " of the retrieval stream could not be parsed: " + reason));
+                    continue;
+                }
+
+                if (evt.has("status")) {
+                    GoodMemRetrievalStatus status = RetrievalStatuses.classify(evt.get("status"));
+                    if (status != null) statuses.add(status);
+                    continue;
+                }
 
                 JsonNode memDef = evt.path("memoryDefinition");
                 if (memDef.isObject()) {
@@ -248,7 +277,7 @@ final class GoodMemClient implements AutoCloseable {
 
                 results.add(new RetrieveResult(chunk, mem, -rawScore)); // negate → higher-is-better
             }
-            return results;
+            return new RetrieveResponse(results, statuses);
         }).subscribeOn(Schedulers.boundedElastic());
     }
 
@@ -333,4 +362,7 @@ final class GoodMemClient implements AutoCloseable {
 
     /** A correlated retrieve result: chunk data, parent memory metadata, and similarity score. */
     record RetrieveResult(ObjectNode chunk, ObjectNode memory, double score) {}
+
+    /** What one retrieve returned: the results, and the problems the server reported. */
+    record RetrieveResponse(List<RetrieveResult> results, List<GoodMemRetrievalStatus> statuses) {}
 }
