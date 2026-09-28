@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.3.2
+
+Python only. Python goes to 0.3.2. .NET and Java send no reranker, so they
+are not affected and not bumped.
+
+### Fixed — Python
+
+- **A failed reranker inverted the ranking.** When `GOODMEM_RERANKER_ID` is
+  set and the reranker cannot run, the server (v1.0.320) reports
+  `RERANKING_FAILED`, plus a `NOT_FOUND` naming the reranker when the id names
+  no reranker, and still returns its vector hits. Those are scored as vector
+  distances, where lower is better. The connector labelled them reranker
+  scores because a reranker was configured, so it passed them through without
+  negating them. Measured live with three memories, the query "capital of
+  Jordan" and a reranker id that does not exist: the best match ("The capital
+  of Jordan is Amman.") scored `-0.785` and the worst ("Bananas are yellow.")
+  scored `-0.112`, the highest of the three. Now they score `0.785`, `0.577`
+  and `0.112`, the same as a search with no reranker. `goodmem_partial` is
+  `True` and `goodmem_statuses` holds `NOT_FOUND` and `RERANKING_FAILED`, as
+  before, and no hit is dropped. A working reranker's scores (`0.941`,
+  `0.484`, `0.320` on the same data) still pass through unchanged.
+- The connector decides this from what the server reported, once the whole
+  stream is read, so a `RERANKING_FAILED` that arrives after the hits still
+  counts. A `NOT_FOUND` counts on its own when its details carry
+  `reranker_id` or `rerankerId`, or its message mentions the reranker. Any
+  other status, including a code the SDK does not recognise, leaves reranker
+  scores as they are.
+
+### Tests
+
+- 8 new offline tests in `test_regressions.py`. Two use new captures from the
+  live server: `retrieve_reranker_missing.ndjson` (the fallback above) and
+  `retrieve_reranked.ndjson` (the same query with a working reranker).
+  Against 0.3.1, 5 of the 8 fail. The 3 that pass are controls: a working
+  reranker, an unrecognised status code, and a `NOT_FOUND` about a space.
+- Python: 206 offline (was 198) and 13 live.
+
 ## 0.3.1
 
 Security release. Python goes to 0.3.1 and Java to `0.1.1-SNAPSHOT`. The .NET

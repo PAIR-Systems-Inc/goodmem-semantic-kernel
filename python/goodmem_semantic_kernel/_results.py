@@ -15,6 +15,10 @@ from goodmem.models.retrieve_memory_event import RetrieveMemoryEvent
 # Notices that carry no loss of results, by their code alone (contract Q1).
 _INFORMATIONAL_CODES = frozenset({"LLM_CAPABILITY_INFERRED", "FEATURE_DISABLED"})
 
+# Sent when a requested reranker could not run. The server then returns the
+# vector-stage hits instead, scored as vector distances, not reranker scores.
+_RERANKING_FAILED_CODE = "RERANKING_FAILED"
+
 
 def is_informational(status: GoodMemStatus) -> bool:
     """True for notices that carry no loss of results.
@@ -50,6 +54,30 @@ def classify(
     return surfaced, degraded
 
 
+def reranking_failed(events: Sequence[RetrieveMemoryEvent]) -> bool:
+    """True when the server reported that the requested reranker did not run.
+
+    ``RERANKING_FAILED`` says so directly. A ``NOT_FOUND`` naming the reranker
+    (live: ``details: {"reranker_id": ...}``, message "Reranker not found")
+    means the same, even if it arrives alone. Any other status leaves the
+    reranker's scores alone.
+    """
+    for event in events:
+        status = event.status
+        if status is None:
+            continue
+        if status.code == _RERANKING_FAILED_CODE:
+            return True
+        details = status.details or {}
+        if status.code == "NOT_FOUND" and (
+            "reranker_id" in details
+            or "rerankerId" in details
+            or "reranker" in status.message.lower()
+        ):
+            return True
+    return False
+
+
 def hits_from_events(
     events: Iterable[RetrieveMemoryEvent],
     *,
@@ -63,8 +91,15 @@ def hits_from_events(
     a UUID join cannot be wrong.
 
     Deduplicates by ``chunk_id``: two chunks of one memory are two results.
+
+    ``reranked`` says whether a reranker was requested. The hits are scored as
+    reranked only if the server did not also report that reranking failed;
+    then they are its vector fallback and are scored as vector hits. This is
+    decided once the whole stream is in, because a ``RERANKING_FAILED`` can
+    arrive after the hits it applies to.
     """
     events = list(events)
+    reranked = reranked and not reranking_failed(events)
     memories = {
         event.memory_definition.memory_id: event.memory_definition
         for event in events
@@ -107,6 +142,8 @@ def score_for_host(hit: dict[str, Any]) -> float | None:
     is the lowest number, so they are negated. Reranker scores are already
     higher-is-better and are passed through untouched — negating one would
     reverse the ranking. ``raw_score`` keeps the server's value either way.
+    ``score_kind`` is what the server did, not what was configured: the
+    vector fallback of a failed reranker is ``"vector"``.
     """
     raw = hit.get("raw_score")
     if raw is None:

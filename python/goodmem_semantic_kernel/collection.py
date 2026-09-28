@@ -578,6 +578,10 @@ class GoodMemCollection(
         ``goodmem_statuses``. A search that reported a problem and found
         nothing returns empty with a warning; it never raises. This is the
         retrieval status contract every GoodMem integration follows.
+
+        When the configured reranker fails, the server still returns its
+        vector hits. Those are scored as vector hits, not reranker hits, and
+        the statuses say why.
         """
         if vector is not None:
             raise VectorStoreOperationNotSupportedException(
@@ -615,6 +619,7 @@ class GoodMemCollection(
             # arrived before it; report it the way a server status is reported.
             statuses.append({"code": "MALFORMED_STREAM", "message": str(truncated)})
             degraded = True
+        # Whether a reranker was asked for; hits_from_events checks that it ran.
         hits = hits_from_events(events, reranked=bool(reranker_id))[: options.top]
 
         if degraded and not hits:

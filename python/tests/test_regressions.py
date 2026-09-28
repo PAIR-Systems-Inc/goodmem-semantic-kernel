@@ -1,6 +1,8 @@
-"""Regressions for every defect the 0.2.0 audit reproduced.
+"""Regressions for every defect the 0.2.0 audit reproduced, and later ones.
 
-Each test names the pattern from the master checklist and fails against 0.2.0.
+Each test names the pattern from the master checklist. The 0.2.0 ones fail
+against 0.2.0. The "score direction when the reranker fails" ones were added
+in 0.3.2 and fail against 0.3.1, except the controls, which say so.
 """
 
 from __future__ import annotations
@@ -18,9 +20,12 @@ from support import (
     MEMORY_2,
     MEMORY_MISSING,
     MEMORY_NEW,
+    MISSING_RERANKER_ID,
     REAL_VECTOR_SCORE,
     RERANKER_ID,
+    SPACE_ID,
     Note,
+    captured_events,
     chunk_event,
     memory_event,
     memory_json,
@@ -434,6 +439,143 @@ async def test_reranker_scores_are_not_negated(sdk_client, recorder, settings):
     assert records[0].score == pytest.approx(0.42)
     body = recorder.bodies_for("POST", "/v1/memories:retrieve")[0]
     assert body["postProcessor"]["config"]["reranker_id"] == RERANKER_ID
+
+
+# ---------------------------------------------------------------------------
+# P29 — score direction when the reranker fails
+# ---------------------------------------------------------------------------
+
+
+def with_reranker(sdk_client, settings, reranker_id=RERANKER_ID) -> GoodMemCollection:
+    return GoodMemCollection(
+        record_type=Note,
+        collection_name="notes",
+        settings=settings.model_copy(update={"reranker_id": reranker_id}),
+        client=sdk_client,
+    )
+
+
+def raw_scores(events) -> list[float]:
+    return [e["retrievedItem"]["chunk"]["relevanceScore"] for e in events if "retrievedItem" in e]
+
+
+async def test_a_failed_reranker_does_not_invert_the_ranking(sdk_client, recorder, settings):
+    """Live capture: the reranker id does not exist, so the server reports
+    NOT_FOUND and RERANKING_FAILED and returns its vector hits (stage
+    ``retrieve``, raw -0.785, -0.577, -0.112). 0.3.1 labelled them reranker
+    scores from configuration and left them un-negated, so the best match
+    scored lowest and the worst highest."""
+    events = captured_events("retrieve_reranker_missing.ndjson")
+    recorder.route("GET", "/v1/spaces", spaces_listing("notes"))
+    recorder.route("POST", "/v1/memories:retrieve", ndjson(*events))
+
+    results = await with_reranker(sdk_client, settings, MISSING_RERANKER_ID).search("x")
+    records = [r async for r in results.results]
+
+    raw = raw_scores(events)
+    assert all(score < 0 for score in raw), "the capture holds vector distances"
+    assert [r.score for r in records] == pytest.approx([-score for score in raw])
+    assert records[0].record.content.startswith("The capital of Jordan is Amman.")
+    assert records[0].score == max(r.score for r in records)
+    assert results.metadata["goodmem_partial"] is True
+    codes = [s["code"] for s in results.metadata["goodmem_statuses"]]
+    assert codes == ["NOT_FOUND", "RERANKING_FAILED"]
+
+
+async def test_a_working_reranker_keeps_its_scores(sdk_client, recorder, settings):
+    """Control, live capture of the same query with a working reranker
+    (stage ``rerank``): the scores are reranker scores and pass through."""
+    events = captured_events("retrieve_reranked.ndjson")
+    recorder.route("GET", "/v1/spaces", spaces_listing("notes"))
+    recorder.route("POST", "/v1/memories:retrieve", ndjson(*events))
+
+    results = await with_reranker(sdk_client, settings).search("x")
+    records = [r async for r in results.results]
+
+    assert [r.score for r in records] == pytest.approx(raw_scores(events))
+    assert records[0].record.content.startswith("The capital of Jordan is Amman.")
+    assert results.metadata["goodmem_partial"] is False
+    assert "goodmem_statuses" not in results.metadata
+
+
+async def test_reranking_failed_after_the_hits_still_counts(sdk_client, recorder, settings):
+    """The outcome is decided once the whole stream is in: a RERANKING_FAILED
+    that arrives after the hits still makes them vector hits."""
+    recorder.route("GET", "/v1/spaces", spaces_listing("notes"))
+    recorder.route(
+        "POST",
+        "/v1/memories:retrieve",
+        ndjson(
+            memory_event(MEMORY_1),
+            chunk_event("c-1", "x", MEMORY_1, score=REAL_VECTOR_SCORE),
+            status_event("RERANKING_FAILED", "Failed to create reranker client"),
+        ),
+    )
+
+    results = await with_reranker(sdk_client, settings).search("x")
+    records = [r async for r in results.results]
+
+    assert records[0].score == pytest.approx(-REAL_VECTOR_SCORE)
+    assert results.metadata["goodmem_partial"] is True
+
+
+@pytest.mark.parametrize(
+    "not_found",
+    [
+        # The live shape, from retrieve_reranker_missing.ndjson.
+        status_event("NOT_FOUND", "Reranker not found", reranker_id=MISSING_RERANKER_ID),
+        status_event("NOT_FOUND", "Not found", rerankerId=MISSING_RERANKER_ID),
+        status_event("NOT_FOUND", "Reranker not found: " + MISSING_RERANKER_ID),
+    ],
+    ids=["details-reranker_id", "details-rerankerId", "message"],
+)
+async def test_a_not_found_naming_the_reranker_means_not_reranked(
+    sdk_client, recorder, settings, not_found
+):
+    """A NOT_FOUND naming the reranker means reranking did not happen, even
+    without a RERANKING_FAILED beside it."""
+    recorder.route("GET", "/v1/spaces", spaces_listing("notes"))
+    recorder.route(
+        "POST",
+        "/v1/memories:retrieve",
+        ndjson(
+            not_found,
+            memory_event(MEMORY_1),
+            chunk_event("c-1", "x", MEMORY_1, score=REAL_VECTOR_SCORE),
+        ),
+    )
+
+    results = await with_reranker(sdk_client, settings, MISSING_RERANKER_ID).search("x")
+    records = [r async for r in results.results]
+
+    assert records[0].score == pytest.approx(-REAL_VECTOR_SCORE)
+    assert results.metadata["goodmem_partial"] is True
+
+
+@pytest.mark.parametrize(
+    "problem",
+    [
+        status_event("SOMETHING_NEW_IN_A_LATER_SERVER", "unrecognised"),
+        status_event("NOT_FOUND", "Space not found", space_id=SPACE_ID),
+    ],
+    ids=["unknown-code", "not-found-space"],
+)
+async def test_an_unrelated_problem_keeps_reranker_scores(sdk_client, recorder, settings, problem):
+    """Control: only a reranker failure turns reranker scores into vector
+    scores. Any other problem is reported and the scores are left alone."""
+    recorder.route("GET", "/v1/spaces", spaces_listing("notes"))
+    recorder.route(
+        "POST",
+        "/v1/memories:retrieve",
+        ndjson(problem, memory_event(MEMORY_1), chunk_event("c-1", "x", MEMORY_1, score=0.87)),
+    )
+
+    results = await with_reranker(sdk_client, settings).search("x")
+    records = [r async for r in results.results]
+
+    assert records[0].score == pytest.approx(0.87)
+    assert results.metadata["goodmem_partial"] is True
+    assert len(results.metadata["goodmem_statuses"]) == 1
 
 
 # ---------------------------------------------------------------------------

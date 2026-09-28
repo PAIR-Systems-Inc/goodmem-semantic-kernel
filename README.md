@@ -161,7 +161,7 @@ Each sample lists its required environment variables in the file header.
 These are the same commands CI runs.
 
 ```bash
-# Python: 198 offline tests. 36 drive the real SDK over a mock HTTP transport,
+# Python: 206 offline tests. 44 drive the real SDK over a mock HTTP transport,
 # using event shapes captured from a live server. 150 drive the whole stack
 # over TCP to a local server that records every request, to check that no id
 # reaches a request path unless it is a UUID. The last 12 run this README's
@@ -290,6 +290,8 @@ see [example_store.py](samples/python/example_store.py)
   ```
 - **`content` is write-only in GoodMem.** The server does not return `originalContent` in search responses. Retrieved text comes from `chunkText` (a chunk of the original), which the connector maps back to your `content` field transparently.
 - **Score convention.** A GoodMem vector `relevanceScore` is a raw pgvector value where lower means more similar, so the connector negates it and Semantic Kernel's higher-is-better convention holds. A **reranker** score (Python only; .NET and Java send no reranker) is already higher-is-better and is passed through unchanged — reranker ranges are provider-dependent (Voyage rerank-2.5 returns roughly `0.27..0.93`, Jina v3 `-0.14..0.43`), so do not assume 0–1 when choosing a threshold.
+
+  The connector decides the kind of score from what the server did, not from `GOODMEM_RERANKER_ID`. When the reranker cannot run, the server reports `RERANKING_FAILED` (and, when the id names no reranker, a `NOT_FOUND` naming it) and still returns its vector hits. The connector scores those as vector hits, so the best match still scores highest. `KernelSearchResults.metadata` has `goodmem_partial` set to `True` and the codes in `goodmem_statuses`, and no hit is dropped. A threshold chosen for reranker scores does not fit these scores, so check `goodmem_statuses` for either code before applying one.
 - **Filters (Python).** `search(filter=...)` is translated to a GoodMem filter expression and evaluated server-side. For a record type with `tag` and `year` data fields:
 
   ```python
