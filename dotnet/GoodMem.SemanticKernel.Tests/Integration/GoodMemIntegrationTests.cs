@@ -75,6 +75,11 @@ public sealed class GoodMemIntegrationTests
             // Scores should be non-negative (connector negates GoodMem's lower-is-better values).
             Assert.All(results, r => Assert.True(r.Score >= 0));
 
+            // A healthy search against the live server reports no problem.
+            var withStatus = await collection.SearchWithStatusAsync("famous towers in Europe", top: 3);
+            Assert.NotEmpty(withStatus.Results);
+            Assert.False(withStatus.Partial, string.Join("; ", withStatus.Statuses));
+
             // Get by key should return the upserted record.
             var fetched = await collection.GetAsync(memories[0].Id!);
             Assert.NotNull(fetched);

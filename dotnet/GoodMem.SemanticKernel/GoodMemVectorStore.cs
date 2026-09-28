@@ -124,6 +124,7 @@ public sealed class GoodMemVectorStore : VectorStore
             EmbedderId = _options.EmbedderId,
             VerifySsl = _options.VerifySsl,
             Definition = definition ?? _options.Definition,
+            LoggerFactory = _options.LoggerFactory,
         };
     }
 }

@@ -38,6 +38,9 @@ internal sealed class RecordingHttpServer : IDisposable
     /// <summary>The space id the space listing reports for "notes".</summary>
     public string ListedSpaceId { get; set; } = DefaultSpaceId;
 
+    /// <summary>The NDJSON stream a retrieve answers with. Empty by default.</summary>
+    public string RetrieveBody { get; set; } = "";
+
     public string Url => $"http://127.0.0.1:{((IPEndPoint)_listener.LocalEndpoint).Port}";
 
     public IReadOnlyList<RecordedRequest> Requests
@@ -127,7 +130,7 @@ internal sealed class RecordingHttpServer : IDisposable
         if (request.Method == "POST" && route == "/v1/memories:batchGet")
             return (200, """{"results":[]}""", Json);
         if (request.Method == "POST" && route == "/v1/memories:retrieve")
-            return (200, "", "application/x-ndjson");
+            return (200, RetrieveBody, "application/x-ndjson");
         if (request.Method == "POST" && route == "/v1/memories")
         {
             var memoryId = JsonNode.Parse(request.Body)?["memoryId"]?.GetValue<string>() ?? AssignedMemoryId;
