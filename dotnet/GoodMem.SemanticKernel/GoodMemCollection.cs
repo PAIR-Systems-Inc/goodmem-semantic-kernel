@@ -123,7 +123,8 @@ public sealed class GoodMemCollection<TRecord> : VectorStoreCollection<string, T
         RecordRetrievalOptions? options = default,
         CancellationToken cancellationToken = default)
     {
-        var memories = await _client.BatchGetMemoriesAsync([key], cancellationToken).ConfigureAwait(false);
+        var id = GoodMemIds.RequireUuid(key, nameof(key));
+        var memories = await _client.BatchGetMemoriesAsync([id], cancellationToken).ConfigureAwait(false);
         if (memories.Count == 0) return null;
         return _schema.Deserialize<TRecord>(memories[0]);
     }
@@ -134,7 +135,8 @@ public sealed class GoodMemCollection<TRecord> : VectorStoreCollection<string, T
         RecordRetrievalOptions? options = default,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        var keyList = keys.ToList();
+        // Ids travel in the batchGet body, not the path; checked for consistency.
+        var keyList = keys.Select(k => GoodMemIds.RequireUuid(k, "key")).ToList();
         if (keyList.Count == 0) yield break;
 
         var memories = await _client.BatchGetMemoriesAsync(keyList, cancellationToken).ConfigureAwait(false);
@@ -148,30 +150,52 @@ public sealed class GoodMemCollection<TRecord> : VectorStoreCollection<string, T
     /// <inheritdoc/>
     public override async Task DeleteAsync(string key, CancellationToken cancellationToken = default)
     {
-        await _client.DeleteMemoryAsync(key, cancellationToken).ConfigureAwait(false);
+        var id = GoodMemIds.RequireUuid(key, nameof(key));
+        await _client.DeleteMemoryAsync(id, cancellationToken).ConfigureAwait(false);
     }
 
     /// <inheritdoc/>
+    /// <remarks>
+    /// Every key is checked before the first delete, so one bad key refuses the
+    /// whole batch rather than leaving it half deleted.
+    /// </remarks>
     public override async Task DeleteAsync(IEnumerable<string> keys, CancellationToken cancellationToken = default)
     {
-        foreach (var key in keys)
-            await _client.DeleteMemoryAsync(key, cancellationToken).ConfigureAwait(false);
+        var ids = keys.Select(k => GoodMemIds.RequireUuid(k, "key")).ToList();
+        foreach (var id in ids)
+            await _client.DeleteMemoryAsync(id, cancellationToken).ConfigureAwait(false);
     }
 
     /// <inheritdoc/>
     public override async Task UpsertAsync(TRecord record, CancellationToken cancellationToken = default)
     {
+        var serialized = Serialize(record);
         var spaceId = await ResolveSpaceIdAsync(cancellationToken).ConfigureAwait(false);
-        await UpsertOneAsync(spaceId, record, cancellationToken).ConfigureAwait(false);
+        await UpsertOneAsync(spaceId, record, serialized, cancellationToken).ConfigureAwait(false);
     }
 
     /// <inheritdoc/>
+    /// <remarks>
+    /// Every key is checked before anything is sent, so one bad key refuses the
+    /// whole batch rather than leaving it half written.
+    /// </remarks>
     public override async Task UpsertAsync(IEnumerable<TRecord> records, CancellationToken cancellationToken = default)
     {
+        var batch = records.Select(r => (Record: r, Serialized: Serialize(r))).ToList();
         var spaceId = await ResolveSpaceIdAsync(cancellationToken).ConfigureAwait(false);
 
-        foreach (var record in records)
-            await UpsertOneAsync(spaceId, record, cancellationToken).ConfigureAwait(false);
+        foreach (var (record, serialized) in batch)
+            await UpsertOneAsync(spaceId, record, serialized, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Serializes a record and checks its key. A null key lets the server assign
+    /// one; any other key must be a UUID, because it is used in a request path.
+    /// </summary>
+    private (string Content, Dictionary<string, object?>? Metadata, string? MemoryId) Serialize(TRecord record)
+    {
+        var (content, metadata, memoryId) = _schema.Serialize(record);
+        return (content, metadata, memoryId is null ? null : GoodMemIds.RequireUuid(memoryId, "key"));
     }
 
     /// <summary>
@@ -183,9 +207,13 @@ public sealed class GoodMemCollection<TRecord> : VectorStoreCollection<string, T
     /// create would destroy the record, so the current version is read before
     /// the delete and written back if the create fails.
     /// </remarks>
-    private async Task UpsertOneAsync(string spaceId, TRecord record, CancellationToken cancellationToken)
+    private async Task UpsertOneAsync(
+        string spaceId,
+        TRecord record,
+        (string Content, Dictionary<string, object?>? Metadata, string? MemoryId) serialized,
+        CancellationToken cancellationToken)
     {
-        var (content, metadata, memoryId) = _schema.Serialize(record);
+        var (content, metadata, memoryId) = serialized;
 
         JsonObject? previous = null;
         if (memoryId is not null)
@@ -324,6 +352,11 @@ public sealed class GoodMemCollection<TRecord> : VectorStoreCollection<string, T
     {
         if (_spaceId is not null) return _spaceId;
 
+        // Checked before the first request, so a bad setting sends nothing.
+        var configuredEmbedder = _options.EmbedderId is { Length: > 0 } configured
+            ? GoodMemIds.RequireUuid(configured, nameof(GoodMemOptions.EmbedderId))
+            : null;
+
         var spaces = await _client.ListSpacesAsync(nameFilter: Name, ct: ct).ConfigureAwait(false);
         foreach (var space in spaces)
         {
@@ -335,7 +368,7 @@ public sealed class GoodMemCollection<TRecord> : VectorStoreCollection<string, T
         }
 
         // Space does not exist — create it.
-        var embedderId = await ResolveEmbedderIdAsync(ct).ConfigureAwait(false);
+        var embedderId = configuredEmbedder ?? await ResolveEmbedderIdAsync(ct).ConfigureAwait(false);
         var created = await _client.CreateSpaceAsync(Name, embedderId, ct: ct).ConfigureAwait(false);
         _spaceId = created["spaceId"]?.GetValue<string>()
                    ?? throw new InvalidOperationException("GoodMem did not return a spaceId after creating the space.");
@@ -344,9 +377,6 @@ public sealed class GoodMemCollection<TRecord> : VectorStoreCollection<string, T
 
     private async Task<string> ResolveEmbedderIdAsync(CancellationToken ct)
     {
-        if (_options.EmbedderId is { Length: > 0 } configured)
-            return configured;
-
         var embedders = await _client.ListEmbeddersAsync(ct).ConfigureAwait(false);
         if (embedders.Count > 0 && embedders[0]["embedderId"]?.GetValue<string>() is string eid)
             return eid;

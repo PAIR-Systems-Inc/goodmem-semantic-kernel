@@ -17,6 +17,10 @@ import static org.assertj.core.api.Assertions.*;
 @WireMockTest
 class GoodMemCollectionUpsertTest {
 
+    // GoodMem ids are UUIDs and the connector refuses any other key.
+    private static final String M1 = "019cfd1d-5a1e-7a4b-9c3e-2f6a1b0c0e01";
+    private static final String M_NEW = "019cfd1d-5a1e-7a4b-9c3e-2f6a1b0c0e03";
+
     public static class Note {
         @GoodMemKey
         public String id;
@@ -53,7 +57,7 @@ class GoodMemCollectionUpsertTest {
 
     /** "old text", base64 — the shape batchGet really returns. */
     private static final String EXISTING = """
-            {"results":[{"success":true,"memory":{"memoryId":"m-1",
+            {"results":[{"success":true,"memory":{"memoryId":"019cfd1d-5a1e-7a4b-9c3e-2f6a1b0c0e01",
             "originalContent":"b2xkIHRleHQ=","contentType":"text/plain",
             "metadata":{"tag":"hr"}}}]}
             """;
@@ -62,22 +66,22 @@ class GoodMemCollectionUpsertTest {
     void existingRecordIsReadBeforeItIsDeleted(WireMockRuntimeInfo wm) {
         stubSpace();
         stubFor(post(urlPathEqualTo("/v1/memories:batchGet")).willReturn(okJson(EXISTING)));
-        stubFor(delete(urlPathEqualTo("/v1/memories/m-1")).willReturn(noContent()));
+        stubFor(delete(urlPathEqualTo("/v1/memories/" + M1)).willReturn(noContent()));
         stubFor(post(urlPathEqualTo("/v1/memories"))
-                .willReturn(okJson("{\"memoryId\":\"m-1\"}")));
+                .willReturn(okJson("{\"memoryId\":\"" + M1 + "\"}")));
 
-        String key = collection(wm).upsert(new Note("m-1", "new text", "hr")).block();
+        String key = collection(wm).upsert(new Note(M1, "new text", "hr")).block();
 
-        assertThat(key).isEqualTo("m-1");
+        assertThat(key).isEqualTo(M1);
         verify(postRequestedFor(urlPathEqualTo("/v1/memories:batchGet")));
-        verify(deleteRequestedFor(urlPathEqualTo("/v1/memories/m-1")));
+        verify(deleteRequestedFor(urlPathEqualTo("/v1/memories/" + M1)));
     }
 
     @Test
     void aFailedUpdateRestoresThePreviousVersion(WireMockRuntimeInfo wm) {
         stubSpace();
         stubFor(post(urlPathEqualTo("/v1/memories:batchGet")).willReturn(okJson(EXISTING)));
-        stubFor(delete(urlPathEqualTo("/v1/memories/m-1")).willReturn(noContent()));
+        stubFor(delete(urlPathEqualTo("/v1/memories/" + M1)).willReturn(noContent()));
 
         // The write fails, then the restore succeeds.
         stubFor(post(urlPathEqualTo("/v1/memories")).inScenario("write")
@@ -87,9 +91,9 @@ class GoodMemCollectionUpsertTest {
                 .willSetStateTo("restoring"));
         stubFor(post(urlPathEqualTo("/v1/memories")).inScenario("write")
                 .whenScenarioStateIs("restoring")
-                .willReturn(okJson("{\"memoryId\":\"m-1\"}")));
+                .willReturn(okJson("{\"memoryId\":\"" + M1 + "\"}")));
 
-        assertThatThrownBy(() -> collection(wm).upsert(new Note("m-1", "", "hr")).block())
+        assertThatThrownBy(() -> collection(wm).upsert(new Note(M1, "", "hr")).block())
                 .isInstanceOf(GoodMemUpsertException.class)
                 .hasMessageContaining("was restored")
                 .satisfies(error -> {
@@ -106,15 +110,15 @@ class GoodMemCollectionUpsertTest {
     void aFailedRestoreNamesTheLostRecord(WireMockRuntimeInfo wm) {
         stubSpace();
         stubFor(post(urlPathEqualTo("/v1/memories:batchGet")).willReturn(okJson(EXISTING)));
-        stubFor(delete(urlPathEqualTo("/v1/memories/m-1")).willReturn(noContent()));
+        stubFor(delete(urlPathEqualTo("/v1/memories/" + M1)).willReturn(noContent()));
         stubFor(post(urlPathEqualTo("/v1/memories"))
                 .willReturn(aResponse().withStatus(500).withBody("down")));
 
-        assertThatThrownBy(() -> collection(wm).upsert(new Note("m-1", "new", "hr")).block())
+        assertThatThrownBy(() -> collection(wm).upsert(new Note(M1, "new", "hr")).block())
                 .isInstanceOf(GoodMemUpsertException.class)
                 .hasMessageContaining("could NOT be restored")
                 .satisfies(error ->
-                        assertThat(((GoodMemUpsertException) error).getLostKey()).isEqualTo("m-1"));
+                        assertThat(((GoodMemUpsertException) error).getLostKey()).isEqualTo(M1));
     }
 
     @Test
@@ -123,11 +127,11 @@ class GoodMemCollectionUpsertTest {
         stubFor(post(urlPathEqualTo("/v1/memories:batchGet"))
                 .willReturn(okJson("{\"results\":[]}")));
         stubFor(post(urlPathEqualTo("/v1/memories"))
-                .willReturn(okJson("{\"memoryId\":\"m-new\"}")));
+                .willReturn(okJson("{\"memoryId\":\"" + M_NEW + "\"}")));
 
-        String key = collection(wm).upsert(new Note("m-new", "hello", "ops")).block();
+        String key = collection(wm).upsert(new Note(M_NEW, "hello", "ops")).block();
 
-        assertThat(key).isEqualTo("m-new");
+        assertThat(key).isEqualTo(M_NEW);
         verify(0, deleteRequestedFor(urlPathMatching("/v1/memories/.*")));
     }
 

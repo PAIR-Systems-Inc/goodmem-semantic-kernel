@@ -120,7 +120,9 @@ internal sealed class GoodMemClient : IDisposable
 
     internal async Task DeleteSpaceAsync(string spaceId, CancellationToken ct = default)
     {
-        var response = await _http.DeleteAsync($"v1/spaces/{Uri.EscapeDataString(spaceId)}", ct).ConfigureAwait(false);
+        // The id is a path segment: only a UUID may reach it (see GoodMemIds).
+        var id = GoodMemIds.RequireUuid(spaceId, nameof(spaceId));
+        var response = await _http.DeleteAsync($"v1/spaces/{id}", ct).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
     }
 
@@ -206,8 +208,9 @@ internal sealed class GoodMemClient : IDisposable
 
     internal async Task DeleteMemoryAsync(string memoryId, CancellationToken ct = default)
     {
-        var response = await _http.DeleteAsync(
-            $"v1/memories/{Uri.EscapeDataString(memoryId)}", ct).ConfigureAwait(false);
+        // The id is a path segment: only a UUID may reach it (see GoodMemIds).
+        var id = GoodMemIds.RequireUuid(memoryId, nameof(memoryId));
+        var response = await _http.DeleteAsync($"v1/memories/{id}", ct).ConfigureAwait(false);
 
         if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
             return;

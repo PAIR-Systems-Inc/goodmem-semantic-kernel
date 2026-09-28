@@ -18,6 +18,10 @@ import static org.assertj.core.api.Assertions.*;
 @WireMockTest
 class GoodMemClientTest {
 
+    // GoodMem ids are UUIDs and the client refuses anything else in a path.
+    private static final String SPACE_ID = "01a0d16b-bbcd-701c-bfb4-fa306021e078";
+    private static final String MEMORY_ID = "019cfd1d-5a1e-7a4b-9c3e-2f6a1b0c0e01";
+
     // ── Factory ───────────────────────────────────────────────────────────────
 
     private GoodMemClient client(WireMockRuntimeInfo wm) {
@@ -110,10 +114,10 @@ class GoodMemClientTest {
 
     @Test
     void deleteSpace_sends204(WireMockRuntimeInfo wm) {
-        stubFor(delete(urlEqualTo("/v1/spaces/space-abc"))
+        stubFor(delete(urlEqualTo("/v1/spaces/" + SPACE_ID))
                 .willReturn(noContent()));
 
-        assertThatCode(() -> client(wm).deleteSpace("space-abc").block())
+        assertThatCode(() -> client(wm).deleteSpace(SPACE_ID).block())
                 .doesNotThrowAnyException();
     }
 
@@ -206,20 +210,20 @@ class GoodMemClientTest {
 
     @Test
     void deleteMemory_success(WireMockRuntimeInfo wm) {
-        stubFor(delete(urlEqualTo("/v1/memories/mem-123"))
+        stubFor(delete(urlEqualTo("/v1/memories/" + MEMORY_ID))
                 .willReturn(noContent()));
 
-        assertThatCode(() -> client(wm).deleteMemory("mem-123").block())
+        assertThatCode(() -> client(wm).deleteMemory(MEMORY_ID).block())
                 .doesNotThrowAnyException();
     }
 
     @Test
     void deleteMemory_notFound_doesNotThrow(WireMockRuntimeInfo wm) {
-        stubFor(delete(urlEqualTo("/v1/memories/mem-missing"))
+        stubFor(delete(urlEqualTo("/v1/memories/" + MEMORY_ID))
                 .willReturn(notFound()));
 
         // 404 is silently swallowed — idempotent delete.
-        assertThatCode(() -> client(wm).deleteMemory("mem-missing").block())
+        assertThatCode(() -> client(wm).deleteMemory(MEMORY_ID).block())
                 .doesNotThrowAnyException();
     }
 
@@ -275,7 +279,7 @@ class GoodMemClientTest {
         stubFor(delete(urlPathMatching("/v1/spaces/.*"))
                 .willReturn(serverError()));
 
-        assertThatThrownBy(() -> client(wm).deleteSpace("space-x").block())
+        assertThatThrownBy(() -> client(wm).deleteSpace(SPACE_ID).block())
                 .isInstanceOf(GoodMemException.class);
     }
 }

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "goodmem-semantic-kernel"
-version = "0.3.0"
+version = "0.3.1"
 description = "GoodMem connector for Microsoft Semantic Kernel"
 readme = "README.md"
 license = { text = "MIT" } 

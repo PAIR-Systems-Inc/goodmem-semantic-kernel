@@ -9,6 +9,7 @@ from semantic_kernel.data.vector import (
     TModel,
     VectorStore,
     VectorStoreCollectionDefinition,
+    VectorStoreField,
 )
 
 if sys.version_info >= (3, 12):
@@ -145,3 +146,18 @@ class GoodMemStore(VectorStore):
             async for space in await self._connection.client.spaces.list(max_items=1000)
             if space.name
         ]
+
+    @override
+    async def ensure_collection_deleted(self, collection_name: str) -> None:
+        """Delete the GoodMem space named ``collection_name``, if it exists.
+
+        Semantic Kernel's default swallows ``VectorStoreOperationException``.
+        That is what the collection raises when it refuses to delete a space
+        the server listed under an id that is not a UUID, so the default would
+        report a delete that never happened as done.
+        """
+        definition = VectorStoreCollectionDefinition(fields=[VectorStoreField("key", name="id")])
+        collection = self.get_collection(
+            record_type=dict, definition=definition, collection_name=collection_name
+        )
+        await collection.ensure_collection_deleted()

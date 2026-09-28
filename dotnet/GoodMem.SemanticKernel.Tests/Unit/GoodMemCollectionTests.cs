@@ -14,6 +14,16 @@ internal class Memory
 
 public sealed class GoodMemCollectionTests : IDisposable
 {
+    // GoodMem ids are UUIDs and the connector refuses anything else, so the
+    // keys, embedder and space ids these tests pass in are real UUIDs.
+    private const string EmbedderId = "019cfd1c-c033-7517-b7de-f73941a0464b";
+    private const string SpaceToDelete = "01a0d16b-bbcd-701c-bfb4-fa306021e078";
+    private const string ExistingId = "019cfd1d-5a1e-7a4b-9c3e-2f6a1b0c0e01";
+    private const string BrandNew = "019cfd1d-5a1e-7a4b-9c3e-2f6a1b0c0e02";
+    private const string Mem1 = "019cfd1d-5a1e-7a4b-9c3e-2f6a1b0c0e03";
+    private const string Mem2 = "019cfd1d-5a1e-7a4b-9c3e-2f6a1b0c0e04";
+    private const string NoSuchId = "019cfd1d-5a1e-7a4b-9c3e-2f6a1b0c0e05";
+
     private readonly MockHttpMessageHandler _handler = new();
     private readonly GoodMemClient _client;
     private readonly GoodMemCollection<Memory> _collection;
@@ -24,7 +34,7 @@ public sealed class GoodMemCollectionTests : IDisposable
         _client = new GoodMemClient(httpClient, ownsClient: false);
         // EmbedderId set so ResolveEmbedderIdAsync never needs to call ListEmbedders.
         _collection = new GoodMemCollection<Memory>(
-            "test-collection", _client, new GoodMemOptions { EmbedderId = "emb-test" });
+            "test-collection", _client, new GoodMemOptions { EmbedderId = EmbedderId });
     }
 
     public void Dispose()
@@ -111,14 +121,14 @@ public sealed class GoodMemCollectionTests : IDisposable
     [Fact]
     public async Task EnsureCollectionDeletedAsync_DeletesSpace_WhenExists()
     {
-        _handler.EnqueueOk(SpaceFoundJson(spaceId: "space-to-delete"));
+        _handler.EnqueueOk(SpaceFoundJson(spaceId: SpaceToDelete));
         _handler.EnqueueNoContent(); // delete response
 
         await _collection.EnsureCollectionDeletedAsync();
 
         Assert.Equal(2, _handler.SentRequests.Count);
         Assert.Equal(HttpMethod.Delete, _handler.SentRequests[1].Method);
-        Assert.Contains("space-to-delete", _handler.SentRequests[1].RequestUri!.ToString());
+        Assert.Contains(SpaceToDelete, _handler.SentRequests[1].RequestUri!.ToString());
     }
 
     [Fact]
@@ -153,11 +163,11 @@ public sealed class GoodMemCollectionTests : IDisposable
         // no update endpoint, so a failed create after a delete would otherwise
         // destroy the record.
         _handler.EnqueueOk(SpaceFoundJson());                 // ResolveSpaceId
-        _handler.EnqueueOk(BatchGetJson("existing-id"));      // read the current version
+        _handler.EnqueueOk(BatchGetJson(ExistingId));      // read the current version
         _handler.EnqueueNoContent();                          // DeleteMemory
-        _handler.EnqueueOk(CreateMemoryJson("existing-id"));  // CreateMemory
+        _handler.EnqueueOk(CreateMemoryJson(ExistingId));  // CreateMemory
 
-        var record = new Memory { Id = "existing-id", Content = "updated" };
+        var record = new Memory { Id = ExistingId, Content = "updated" };
         await _collection.UpsertAsync(record);
 
         Assert.Equal(4, _handler.SentRequests.Count);
@@ -170,12 +180,12 @@ public sealed class GoodMemCollectionTests : IDisposable
     public async Task UpsertAsync_FailedUpdate_RestoresThePreviousVersion()
     {
         _handler.EnqueueOk(SpaceFoundJson());                        // ResolveSpaceId
-        _handler.EnqueueOk(BatchGetJson("existing-id", "aGVsbG8=")); // "hello", base64
+        _handler.EnqueueOk(BatchGetJson(ExistingId, "aGVsbG8=")); // "hello", base64
         _handler.EnqueueNoContent();                                 // DeleteMemory
         _handler.EnqueueBadRequest();                                // CreateMemory fails
-        _handler.EnqueueOk(CreateMemoryJson("existing-id"));         // restore succeeds
+        _handler.EnqueueOk(CreateMemoryJson(ExistingId));         // restore succeeds
 
-        var record = new Memory { Id = "existing-id", Content = "" };
+        var record = new Memory { Id = ExistingId, Content = "" };
 
         var error = await Assert.ThrowsAsync<GoodMemUpsertException>(
             () => _collection.UpsertAsync(record));
@@ -190,18 +200,18 @@ public sealed class GoodMemCollectionTests : IDisposable
     public async Task UpsertAsync_FailedUpdateAndFailedRestore_NamesTheLostRecord()
     {
         _handler.EnqueueOk(SpaceFoundJson());
-        _handler.EnqueueOk(BatchGetJson("existing-id", "aGVsbG8="));
+        _handler.EnqueueOk(BatchGetJson(ExistingId, "aGVsbG8="));
         _handler.EnqueueNoContent();
         _handler.EnqueueBadRequest();                 // CreateMemory fails
         _handler.EnqueueBadRequest();                 // and so does the restore
 
-        var record = new Memory { Id = "existing-id", Content = "" };
+        var record = new Memory { Id = ExistingId, Content = "" };
 
         var error = await Assert.ThrowsAsync<GoodMemUpsertException>(
             () => _collection.UpsertAsync(record));
 
         Assert.False(error.Restored);
-        Assert.Equal("existing-id", error.LostKey);
+        Assert.Equal(ExistingId, error.LostKey);
         Assert.Contains("could NOT be restored", error.Message);
     }
 
@@ -210,9 +220,9 @@ public sealed class GoodMemCollectionTests : IDisposable
     {
         _handler.EnqueueOk(SpaceFoundJson());
         _handler.EnqueueOk(EmptyBatchGetJson());             // nothing to replace
-        _handler.EnqueueOk(CreateMemoryJson("brand-new"));
+        _handler.EnqueueOk(CreateMemoryJson(BrandNew));
 
-        await _collection.UpsertAsync(new Memory { Id = "brand-new", Content = "hi" });
+        await _collection.UpsertAsync(new Memory { Id = BrandNew, Content = "hi" });
 
         Assert.DoesNotContain(_handler.SentRequests, r => r.Method == HttpMethod.Delete);
     }
@@ -237,12 +247,12 @@ public sealed class GoodMemCollectionTests : IDisposable
     [Fact]
     public async Task GetAsync_SingleKey_ReturnsDeserializedRecord()
     {
-        _handler.EnqueueOk(BatchGetJson("mem-1", "batch content", "geo"));
+        _handler.EnqueueOk(BatchGetJson(Mem1, "batch content", "geo"));
 
-        var record = await _collection.GetAsync("mem-1");
+        var record = await _collection.GetAsync(Mem1);
 
         Assert.NotNull(record);
-        Assert.Equal("mem-1", record!.Id);
+        Assert.Equal(Mem1, record!.Id);
         Assert.Equal("batch content", record.Content);
         Assert.Equal("geo", record.Topic);
     }
@@ -252,7 +262,7 @@ public sealed class GoodMemCollectionTests : IDisposable
     {
         _handler.EnqueueOk(EmptyBatchGetJson());
 
-        var record = await _collection.GetAsync("no-such-id");
+        var record = await _collection.GetAsync(NoSuchId);
 
         Assert.Null(record);
     }
@@ -260,15 +270,15 @@ public sealed class GoodMemCollectionTests : IDisposable
     [Fact]
     public async Task GetAsync_MultipleKeys_YieldsEachRecord()
     {
-        _handler.EnqueueOk("""
+        _handler.EnqueueOk($$$$"""
             {"results":[
-              {"success":true,"memory":{"memoryId":"m1","originalContent":"one","metadata":{}}},
-              {"success":true,"memory":{"memoryId":"m2","originalContent":"two","metadata":{}}}
+              {"success":true,"memory":{"memoryId":"{{{{Mem1}}}}","originalContent":"one","metadata":{}}},
+              {"success":true,"memory":{"memoryId":"{{{{Mem2}}}}","originalContent":"two","metadata":{}}}
             ]}
             """);
 
         var results = new List<Memory>();
-        await foreach (var r in _collection.GetAsync(new[] { "m1", "m2" }))
+        await foreach (var r in _collection.GetAsync(new[] { Mem1, Mem2 }))
             results.Add(r);
 
         Assert.Equal(2, results.Count);
@@ -283,11 +293,11 @@ public sealed class GoodMemCollectionTests : IDisposable
     {
         _handler.EnqueueNoContent();
 
-        await _collection.DeleteAsync("mem-to-delete");
+        await _collection.DeleteAsync(Mem1);
 
         Assert.Single(_handler.SentRequests);
         Assert.Equal(HttpMethod.Delete, _handler.SentRequests[0].Method);
-        Assert.Contains("mem-to-delete", _handler.SentRequests[0].RequestUri!.ToString());
+        Assert.Equal($"/v1/memories/{Mem1}", _handler.SentRequests[0].RequestUri!.AbsolutePath);
     }
 
     [Fact]
@@ -296,7 +306,7 @@ public sealed class GoodMemCollectionTests : IDisposable
         _handler.EnqueueNoContent();
         _handler.EnqueueNoContent();
 
-        await _collection.DeleteAsync(new[] { "a", "b" });
+        await _collection.DeleteAsync(new[] { Mem1, Mem2 });
 
         Assert.Equal(2, _handler.SentRequests.Count);
     }
