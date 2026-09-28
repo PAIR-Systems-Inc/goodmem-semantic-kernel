@@ -4,6 +4,11 @@ Nothing inside the connector or the SDK is monkeypatched, so a passing test
 means the wire behaviour is right rather than that a stub was called. Event
 shapes come from ``fixtures/retrieve_real.ndjson``, captured from a live
 GoodMem server (v1.0.320), not hand-written from a guess at the schema.
+
+``retrieve_reranked.ndjson`` and ``retrieve_reranker_missing.ndjson`` are two
+more captures from that server: the same three memories and the query
+"capital of Jordan", once with a working reranker and once with a reranker id
+that does not exist. The second is the server's vector fallback.
 """
 
 # NOTE: no `from __future__ import annotations` here. Semantic Kernel reads
@@ -30,6 +35,8 @@ REAL_VECTOR_SCORE = -0.5911163091659546
 SPACE_ID = "01a0d16b-bbcd-701c-bfb4-fa306021e078"
 EMBEDDER_ID = "019cfd1c-c033-7517-b7de-f73941a0464b"
 RERANKER_ID = "019cfd94-2844-7117-85ca-1b9919758a27"
+# The reranker id retrieve_reranker_missing.ndjson asked for; the server has none.
+MISSING_RERANKER_ID = "00000000-0000-7000-8000-000000000000"
 
 # GoodMem ids are UUIDs and the connector refuses anything else, so record
 # keys in tests are real UUIDs too.
@@ -51,9 +58,14 @@ class Note:
     active: Annotated[bool | None, VectorStoreField("data")] = None
 
 
-def real_events() -> list[dict[str, Any]]:
-    text = (FIXTURES / "retrieve_real.ndjson").read_text()
+def captured_events(name: str) -> list[dict[str, Any]]:
+    """The events of one captured stream in ``fixtures/``, in arrival order."""
+    text = (FIXTURES / name).read_text()
     return [json.loads(line) for line in text.splitlines() if line.strip()]
+
+
+def real_events() -> list[dict[str, Any]]:
+    return captured_events("retrieve_real.ndjson")
 
 
 def _template(kind: str) -> dict[str, Any]:

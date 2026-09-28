@@ -25,7 +25,9 @@ class GoodMemSettings(KernelBaseSettings):
             connector will not invent one: creating a collection raises and
             names this setting, because the embedder decides how every memory
             in the space is indexed and is not changeable afterwards.
-        reranker_id: Optional reranker UUID applied to searches.
+        reranker_id: Optional reranker UUID applied to searches. If the
+            server reports that it failed, a search returns the server's
+            vector hits, scored as vector hits, with ``goodmem_partial`` set.
         verify_ssl: Whether to verify TLS certificates (default ``True``).
             Set to ``False`` for local servers with self-signed certificates
             (``GOODMEM_VERIFY_SSL=false``).
