@@ -1,0 +1,64 @@
+name: Release on merge
+
+# Publishes a merged version bump without a hand-pushed tag. When the CI workflow
+# passes on a push to main, this reads the version in pyproject.toml. If
+# PyPI does not have that version yet, it tags the merged commit
+# v<version> and starts publish.yml on the tag, which builds and publishes
+# exactly as a hand-pushed tag always did (PyPI Trusted Publishing). A merge that leaves the
+# version unchanged releases nothing. Pushing a tag by hand still works;
+# this then sees the tag and does nothing.
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: write  # create the v<version> tag
+  actions: write   # start publish.yml on it
+
+concurrency:
+  group: release-on-merge
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Tag and publish a new version
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Read the package version
+        id: version
+        run: |
+          python3 - >> "$GITHUB_OUTPUT" <<'EOF'
+          import tomllib
+          project = tomllib.load(open("pyproject.toml", "rb"))["project"]
+          print(f"name={project['name']}")
+          print(f"version={project['version']}")
+          EOF
+
+      - name: Tag and publish if this version is new
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NAME: ${{ steps.version.outputs.name }}
+          VERSION: ${{ steps.version.outputs.version }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          tag="v$VERSION"
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --silent 2>/dev/null; then
+            echo "$tag already exists; nothing to release."
+            exit 0
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$tag" -f sha="$SHA" --silent
+          echo "Tagged $SHA as $tag."
+          if curl -fs -o /dev/null "https://pypi.org/pypi/$NAME/$VERSION/json"; then
+            echo "$NAME $VERSION is already on PyPI; tagged it without publishing again."
+            exit 0
+          fi
+          gh workflow run publish.yml --repo "$GITHUB_REPOSITORY" --ref "$tag"
+          echo "Started publish.yml on $tag."
