@@ -1,7 +1,7 @@
 name: Publish to PyPI
 
-# Builds the sdist + wheel on every push and PR, and publishes to PyPI when a
-# `v*` git tag is pushed. Authentication uses PyPI Trusted Publishing (OIDC);
+# Builds the sdist + wheel on every push and PR, and publishes to PyPI when it
+# runs on a `v*` tag. Authentication uses PyPI Trusted Publishing (OIDC);
 # no API token is stored as a GitHub secret.
 #
 # One-time setup on PyPI (the project already exists):
@@ -12,9 +12,11 @@ name: Publish to PyPI
 #     Environment: pypi
 #
 # Release procedure:
-#   1. Bump `version` in pyproject.toml.
-#   2. `git tag vX.Y.Z && git push origin vX.Y.Z`.
+#   1. Bump `version` in pyproject.toml in the PR.
+#   2. Merge it. When CI passes on main, release-on-merge.yml tags the merge
+#      vX.Y.Z and starts this workflow on the tag.
 #   3. The `publish` job runs against the `pypi` environment and uploads.
+# Pushing `vX.Y.Z` by hand still publishes too.
 
 on:
   push:
@@ -22,6 +24,8 @@ on:
     tags: ["v*"]
   pull_request:
     branches: [main]
+  # Started on a v* tag by release-on-merge.yml after a merge bumps the version.
+  workflow_dispatch:
 
 permissions:
   contents: read
