@@ -14,6 +14,8 @@
     <!-- VectorData abstractions — use the same package SK ships internally -->
     <PackageReference Include="Microsoft.Extensions.VectorData.Abstractions" Version="9.*" />
     <PackageReference Include="System.Linq.AsyncEnumerable" Version="9.*" />
+    <!-- ILogger, for the warning a degraded search logs (retrieval status contract) -->
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.*" />
   </ItemGroup>
 
   <ItemGroup>

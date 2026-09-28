@@ -182,11 +182,14 @@ GOODMEM_EMBEDDER_ID=your_embedder_uuid \
 GOODMEM_VERIFY_SSL=false \
   pytest python/tests -q
 
-# .NET: 167 offline tests (3 integration tests skip without GOODMEM_API_KEY)
+# .NET: 185 offline tests (3 integration tests skip without GOODMEM_API_KEY).
+# 18 check how a search reports the server's statuses, on retrieval streams
+# captured from a live server, through the real HTTP client and a mock handler.
 dotnet build dotnet/GoodMem.SemanticKernel/GoodMem.SemanticKernel.csproj --configuration Release
 dotnet test dotnet/GoodMem.SemanticKernel.Tests/GoodMem.SemanticKernel.Tests.csproj --configuration Release
 
-# Java: 143 tests, against WireMock and a local recording server
+# Java: 162 tests, against WireMock and a local recording server. 19 check
+# how a search reports the server's statuses, on captured retrieval streams.
 mvn -B -f java/pom.xml test
 ```
 
@@ -292,6 +295,28 @@ see [example_store.py](samples/python/example_store.py)
 - **Score convention.** A GoodMem vector `relevanceScore` is a raw pgvector value where lower means more similar, so the connector negates it and Semantic Kernel's higher-is-better convention holds. A **reranker** score (Python only; .NET and Java send no reranker) is already higher-is-better and is passed through unchanged — reranker ranges are provider-dependent (Voyage rerank-2.5 returns roughly `0.27..0.93`, Jina v3 `-0.14..0.43`), so do not assume 0–1 when choosing a threshold.
 
   The connector decides the kind of score from what the server did, not from `GOODMEM_RERANKER_ID`. When the reranker cannot run, the server reports `RERANKING_FAILED` (and, when the id names no reranker, a `NOT_FOUND` naming it) and still returns its vector hits. The connector scores those as vector hits, so the best match still scores highest. `KernelSearchResults.metadata` has `goodmem_partial` set to `True` and the codes in `goodmem_statuses`, and no hit is dropped. A threshold chosen for reranker scores does not fit these scores, so check `goodmem_statuses` for either code before applying one.
+- **A search the server reported a problem with says so (.NET, Java).** GoodMem sends `status` events in a search's response stream, for example `NOT_FOUND` and `RERANKING_FAILED` when a reranker does not exist, or `EMBEDDER_FAILED`. The connectors follow the retrieval status contract every GoodMem integration follows:
+  - `FEATURE_DISABLED` and `LLM_CAPABILITY_INFERRED` are notices about optional features the search did not ask for. They are ignored, by their code alone.
+  - Any other status marks the search **partial**. The results the server did return are always kept, and a reported problem never throws, even when nothing came back.
+  - A code the connector does not recognise is reported as `UNKNOWN`, with the server's own code kept in `OriginalCode` (.NET) / `originalCode()` (Java).
+  - A line of the response stream that cannot be parsed is reported as `MALFORMED_STREAM`, and the lines around it are still read.
+
+  `SearchWithStatusAsync` (.NET) returns a `GoodMemSearchResults<TRecord>` with `Results`, `Partial` and `Statuses`; `searchWithStatus` (Java) returns a `GoodMemCollection.SearchResults<T>` with `results()`, `partial()` and `statuses()`. Each status is a `GoodMemRetrievalStatus`:
+
+  ```csharp
+  var search = await collection.SearchWithStatusAsync("european capitals", top: 3);
+  if (search.Partial)
+      foreach (var status in search.Statuses)
+          Console.WriteLine(status);  // e.g. "RERANKING_FAILED: Failed to create reranker client: ..."
+  ```
+
+  ```java
+  var search = collection.searchWithStatus("european capitals", 3).block();
+  if (search.partial())
+      search.statuses().forEach(System.out::println);  // code, message and details, one per line
+  ```
+
+  Semantic Kernel's `SearchAsync` (.NET), the Java `search` and the Java plugin's `recall` have nowhere to put the flag, so they log a warning that names the statuses whenever the search was partial. `SearchWithStatusAsync` and `searchWithStatus` log one only when a partial search returned nothing. .NET logs through `GoodMemOptions.LoggerFactory`, or to standard error when it is not set (set `NullLoggerFactory.Instance` to silence it). Java logs through `System.Logger` under `ai.goodmem.semantickernel.GoodMemCollection`, which `java.util.logging` prints to standard error unless the application routes it elsewhere.
 - **Filters (Python).** `search(filter=...)` is translated to a GoodMem filter expression and evaluated server-side. For a record type with `tag` and `year` data fields:
 
   ```python
@@ -333,6 +358,8 @@ goodmem-semantic-kernel/           ← repo root
 │           ├── GoodMemClient.java       # Async HTTP client (GoodMem REST API)
 │           ├── GoodMemOptions.java      # Configuration (reads GOODMEM_* env vars)
 │           ├── GoodMemIds.java          # Refuses any id that is not a UUID before it is sent
+│           ├── GoodMemRetrievalStatus.java  # A problem the server reported during a search
+│           ├── RetrievalStatuses.java   # Sorts a search's status events (the status contract)
 │           ├── GoodMemUpsertException.java  # A failed update: restored or lost key
 │           └── GoodMemException.java    # Runtime exception wrapper
 ├── samples/

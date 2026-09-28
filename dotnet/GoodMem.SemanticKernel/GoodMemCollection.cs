@@ -3,6 +3,7 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json.Nodes;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.VectorData;
 
 namespace GoodMem.SemanticKernel;
@@ -44,6 +45,7 @@ public sealed class GoodMemCollection<TRecord> : VectorStoreCollection<string, T
     private readonly bool _ownsClient;
     private readonly GoodMemOptions _options;
     private readonly GoodMemSchema _schema;
+    private readonly ILogger _logger;
 
     // Lazily resolved space UUID for this collection name.
     private string? _spaceId;
@@ -72,6 +74,8 @@ public sealed class GoodMemCollection<TRecord> : VectorStoreCollection<string, T
         _schema = GoodMemSchema.Build(typeof(TRecord), _options.Definition);
         _ownsClient = client is null;
         _client = client ?? new GoodMemClient(_options.BaseUrl, _options.ApiKey, _options.VerifySsl);
+        const string category = "GoodMem.SemanticKernel.GoodMemCollection";
+        _logger = _options.LoggerFactory?.CreateLogger(category) ?? new GoodMemStandardErrorLogger(category);
     }
 
     /// <inheritdoc/>
@@ -292,8 +296,16 @@ public sealed class GoodMemCollection<TRecord> : VectorStoreCollection<string, T
 
     /// <inheritdoc/>
     /// <remarks>
+    /// <para>
     /// Only text search (<typeparamref name="TInput"/> = <see cref="string"/>) is supported.
     /// GoodMem embeds the query server-side; pre-computed vectors are not accepted.
+    /// </para>
+    /// <para>
+    /// When the server reports a problem, such as a reranker that failed, the results it did
+    /// return are still yielded, and a warning naming the statuses is logged, since this
+    /// method has nowhere else to put them. It never throws for a reported problem. Use
+    /// <see cref="SearchWithStatusAsync"/> to get the statuses and the partial flag.
+    /// </para>
     /// </remarks>
     public override async IAsyncEnumerable<VectorSearchResult<TRecord>> SearchAsync<TInput>(
         TInput searchValue,
@@ -305,20 +317,90 @@ public sealed class GoodMemCollection<TRecord> : VectorStoreCollection<string, T
             throw new NotSupportedException(
                 "GoodMem only supports text search. Pass a string value — GoodMem will embed it server-side.");
 
+        var search = await SearchCoreAsync(query, top, options, cancellationToken).ConfigureAwait(false);
+
+        // Contract Q4a/Q4b: the results come back whatever happened, and with no slot for a
+        // flag on an IAsyncEnumerable, the log line is where a reported problem shows.
+        if (search.Partial)
+            LogPartial(search);
+
+        foreach (var result in search.Results)
+            yield return result;
+    }
+
+    /// <summary>
+    /// Searches like <see cref="SearchAsync{TInput}"/>, and also returns every problem the
+    /// GoodMem server reported while it ran.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This follows the retrieval status contract every GoodMem integration follows.
+    /// <c>FEATURE_DISABLED</c> and <c>LLM_CAPABILITY_INFERRED</c> are informational and are not
+    /// reported. Any other status sets <see cref="GoodMemSearchResults{TRecord}.Partial"/> and
+    /// is listed in <see cref="GoodMemSearchResults{TRecord}.Statuses"/>; a code this connector
+    /// does not recognise is listed as <c>UNKNOWN</c>, with the server's code in
+    /// <see cref="GoodMemRetrievalStatus.OriginalCode"/>. The results the server returned are
+    /// always kept. A reported problem with no results returns an empty, partial result and
+    /// logs a warning; it never throws.
+    /// </para>
+    /// </remarks>
+    /// <param name="query">The text to search for. GoodMem embeds it server-side.</param>
+    /// <param name="top">The maximum number of results.</param>
+    /// <param name="options">Search options. Filters are not supported.</param>
+    /// <param name="cancellationToken">Cancels the request.</param>
+    public async Task<GoodMemSearchResults<TRecord>> SearchWithStatusAsync(
+        string query,
+        int top,
+        VectorSearchOptions<TRecord>? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        var search = await SearchCoreAsync(query, top, options, cancellationToken).ConfigureAwait(false);
+
+        // Contract Q4b: empty plus a flag, never an exception, and a warning as well.
+        if (search.Partial && search.Results.Count == 0)
+            LogPartial(search);
+
+        return search;
+    }
+
+    private async Task<GoodMemSearchResults<TRecord>> SearchCoreAsync(
+        string query,
+        int top,
+        VectorSearchOptions<TRecord>? options,
+        CancellationToken cancellationToken)
+    {
         if (options?.Filter is not null)
             throw new NotSupportedException(
                 "Filter expressions are not supported by the GoodMem SK connector in v1. " +
                 "Remove the filter or post-filter in application code.");
 
         var spaceId = await ResolveSpaceIdAsync(cancellationToken).ConfigureAwait(false);
-        var results = await _client.RetrieveMemoriesAsync(query, [spaceId], top, cancellationToken).ConfigureAwait(false);
+        var response = await _client.RetrieveMemoriesAsync(query, [spaceId], top, cancellationToken)
+            .ConfigureAwait(false);
 
-        foreach (var result in results)
+        var results = new List<VectorSearchResult<TRecord>>(response.Results.Count);
+        foreach (var result in response.Results)
         {
             var record = _schema.DeserializeFromRetrieve<TRecord>(result.Chunk, result.Memory);
             if (record is not null)
-                yield return new VectorSearchResult<TRecord>(record, result.Score);
+                results.Add(new VectorSearchResult<TRecord>(record, result.Score));
         }
+
+        return new GoodMemSearchResults<TRecord>(results, response.Statuses);
+    }
+
+    private void LogPartial(GoodMemSearchResults<TRecord> search)
+    {
+        var statuses = RetrievalStatuses.Describe(search.Statuses);
+        if (search.Results.Count == 0)
+            _logger.LogWarning(
+                "GoodMem search of {Collection} reported a problem and returned no results: {Statuses}",
+                Name, statuses);
+        else
+            _logger.LogWarning(
+                "GoodMem search of {Collection} reported a problem; the {Count} results it returned may be incomplete: {Statuses}",
+                Name, search.Results.Count, statuses);
     }
 
     // ------------------------------------------------------------------

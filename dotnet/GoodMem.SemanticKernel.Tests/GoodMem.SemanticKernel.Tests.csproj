@@ -25,4 +25,9 @@
     <ProjectReference Include="../GoodMem.SemanticKernel/GoodMem.SemanticKernel.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Retrieval streams captured from a live GoodMem server (v1.0.320). -->
+    <None Include="Fixtures/*.ndjson" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

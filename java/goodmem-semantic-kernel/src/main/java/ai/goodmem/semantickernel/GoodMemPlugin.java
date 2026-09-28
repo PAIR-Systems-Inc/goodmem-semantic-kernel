@@ -82,6 +82,10 @@ public final class GoodMemPlugin<T> {
     /**
      * Searches long-term memory and returns the most relevant results.
      *
+     * <p>When the server reports a problem with the search, the memories it did return are
+     * still used and a warning naming the statuses is logged (see
+     * {@link GoodMemCollection#search}).
+     *
      * @param query natural-language search query
      * @param top   maximum number of memories to return (default 3)
      * @return newline-separated list of relevant memory texts, or a fallback message

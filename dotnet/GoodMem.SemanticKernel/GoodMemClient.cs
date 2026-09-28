@@ -220,9 +220,16 @@ internal sealed class GoodMemClient : IDisposable
 
     /// <summary>
     /// Semantic search over one or more spaces. Parses the NDJSON response and
-    /// returns a unified list of results with chunk, memory, and score.
+    /// returns a unified list of results with chunk, memory, and score, plus every
+    /// status the server reported that means results may be missing.
     /// </summary>
-    internal async Task<List<RetrieveResult>> RetrieveMemoriesAsync(
+    /// <remarks>
+    /// A <c>status</c> event never removes a result and never throws; see
+    /// <see cref="RetrievalStatuses"/>. A line that cannot be parsed is reported as
+    /// <c>MALFORMED_STREAM</c> rather than skipped, so a broken stream does not read as a
+    /// complete one.
+    /// </remarks>
+    internal async Task<RetrieveResponse> RetrieveMemoriesAsync(
         string query,
         IEnumerable<string> spaceIds,
         int top = 5,
@@ -252,16 +259,36 @@ internal sealed class GoodMemClient : IDisposable
         // retrievedItem events reference a memoryIndex into that list.
         var memoryList = new List<JsonObject>();
         var chunkRefs = new List<JsonObject>();
+        var statuses = new List<GoodMemRetrievalStatus>();
 
-        foreach (var line in body.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        var lineNumber = 0;
+        foreach (var line in body.Split('\n'))
         {
+            lineNumber++;
             var trimmed = line.Trim();
             if (string.IsNullOrEmpty(trimmed)) continue;
 
             JsonObject? evt;
-            try { evt = JsonSerializer.Deserialize<JsonObject>(trimmed, s_jsonOptions); }
-            catch { continue; }
-            if (evt is null) continue;
+            try
+            {
+                evt = JsonSerializer.Deserialize<JsonObject>(trimmed, s_jsonOptions)
+                      ?? throw new JsonException("the line is null, not an event object");
+            }
+            catch (Exception exc)
+            {
+                // Keep every event around the bad line, and report it the way a server
+                // status is reported: a truncated stream must not read as a complete one.
+                statuses.Add(RetrievalStatuses.Malformed(
+                    $"Line {lineNumber} of the retrieval stream could not be parsed: {exc.Message}"));
+                continue;
+            }
+
+            if (evt.ContainsKey("status"))
+            {
+                if (RetrievalStatuses.Classify(evt["status"]) is { } status)
+                    statuses.Add(status);
+                continue;
+            }
 
             if (evt["memoryDefinition"] is JsonObject memDef)
             {
@@ -287,8 +314,13 @@ internal sealed class GoodMemClient : IDisposable
             results.Add(new RetrieveResult(chunk, mem, -rawScore)); // negate: lower-is-better → higher-is-better
         }
 
-        return results;
+        return new RetrieveResponse(results, statuses);
     }
+
+    /// <summary>
+    /// What one retrieve returned: the results, and the problems the server reported.
+    /// </summary>
+    internal sealed record RetrieveResponse(List<RetrieveResult> Results, List<GoodMemRetrievalStatus> Statuses);
 
     /// <summary>A correlated retrieve result: chunk data, memory metadata, and similarity score.</summary>
     internal sealed record RetrieveResult(JsonObject Chunk, JsonObject Memory, double Score);

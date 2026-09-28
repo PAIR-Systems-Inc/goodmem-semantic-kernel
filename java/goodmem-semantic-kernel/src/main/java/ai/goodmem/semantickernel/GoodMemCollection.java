@@ -43,6 +43,12 @@ public final class GoodMemCollection<T> implements AutoCloseable {
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
 
+    /**
+     * JDK platform logging: with no configuration, java.util.logging prints warnings to
+     * standard error; an application on SLF4J or Log4j routes it with their System.Logger bridge.
+     */
+    private static final System.Logger LOG = System.getLogger(GoodMemCollection.class.getName());
+
     private final String name;
     private final GoodMemClient client;
     private final GoodMemSchema<T> schema;
@@ -295,22 +301,96 @@ public final class GoodMemCollection<T> implements AutoCloseable {
     /**
      * Searches this collection semantically. GoodMem embeds the query server-side.
      *
+     * <p>When the server reports a problem, such as a reranker that failed, the results it did
+     * return are still emitted and a warning naming the statuses is logged, since a
+     * {@link Flux} of results has nowhere else to put them. It never errors for a reported
+     * problem. Use {@link #searchWithStatus} to get the statuses and the partial flag.
+     *
      * @param query natural-language query text
      * @param top   maximum number of results to return
      * @return a {@link Flux} of {@link SearchResult} ordered by relevance (highest score first)
      */
     public Flux<SearchResult<T>> search(String query, int top) {
-        return resolveSpaceId().flatMapMany(sid ->
-                client.retrieveMemories(query, List.of(sid), top)
-                        .flatMapMany(Flux::fromIterable)
-                        .map(r -> new SearchResult<>(
-                                schema.deserializeFromRetrieve(r.chunk(), r.memory()),
-                                r.score()))
-        );
+        return searchCore(query, top)
+                .doOnNext(search -> {
+                    // Contract Q4a/Q4b: the results come back whatever happened, and with no
+                    // slot for a flag on a Flux, the log line is where a reported problem shows.
+                    if (search.partial()) logPartial(search);
+                })
+                .flatMapMany(search -> Flux.fromIterable(search.results()));
+    }
+
+    /**
+     * Searches like {@link #search}, and also returns every problem the GoodMem server
+     * reported while it ran.
+     *
+     * <p>This follows the retrieval status contract every GoodMem integration follows.
+     * {@code FEATURE_DISABLED} and {@code LLM_CAPABILITY_INFERRED} are informational and are not
+     * reported. Any other status sets {@link SearchResults#partial()} and is listed in
+     * {@link SearchResults#statuses()}; a code this connector does not recognise is listed as
+     * {@code UNKNOWN}, with the server's code in {@link GoodMemRetrievalStatus#originalCode()}.
+     * The results the server returned are always kept. A reported problem with no results
+     * emits an empty, partial result and logs a warning; it never errors.
+     *
+     * @param query natural-language query text
+     * @param top   maximum number of results to return
+     * @return the results, best first, with the statuses the server reported
+     */
+    public Mono<SearchResults<T>> searchWithStatus(String query, int top) {
+        return searchCore(query, top)
+                .doOnNext(search -> {
+                    // Contract Q4b: empty plus a flag, never an error, and a warning as well.
+                    if (search.partial() && search.results().isEmpty()) logPartial(search);
+                });
+    }
+
+    private Mono<SearchResults<T>> searchCore(String query, int top) {
+        return resolveSpaceId()
+                .flatMap(sid -> client.retrieveMemories(query, List.of(sid), top))
+                .map(response -> new SearchResults<>(
+                        response.results().stream()
+                                .map(r -> new SearchResult<>(
+                                        schema.deserializeFromRetrieve(r.chunk(), r.memory()),
+                                        r.score()))
+                                .toList(),
+                        response.statuses()));
+    }
+
+    private void logPartial(SearchResults<T> search) {
+        String statuses = RetrievalStatuses.describe(search.statuses());
+        LOG.log(System.Logger.Level.WARNING, search.results().isEmpty()
+                ? "GoodMem search of " + name + " reported a problem and returned no results: " + statuses
+                : "GoodMem search of " + name + " reported a problem; the " + search.results().size()
+                        + " results it returned may be incomplete: " + statuses);
     }
 
     /** A single search result pairing a deserialized record with its relevance score. */
     public record SearchResult<R>(R record, double score) {}
+
+    /**
+     * The results of {@link #searchWithStatus}, with any problem the GoodMem server reported.
+     *
+     * @param results  every result the server returned, best first; a reported problem never
+     *                 removes results
+     * @param statuses the problems the server reported; informational notices
+     *                 ({@code FEATURE_DISABLED}, {@code LLM_CAPABILITY_INFERRED}) are not included
+     */
+    public record SearchResults<R>(List<SearchResult<R>> results, List<GoodMemRetrievalStatus> statuses) {
+
+        public SearchResults {
+            results = List.copyOf(results);
+            statuses = List.copyOf(statuses);
+        }
+
+        /**
+         * {@code true} when the server reported a real problem during this search, so
+         * {@link #results()} may be incomplete, or empty when they should not be. It does not
+         * depend on whether any results came back.
+         */
+        public boolean partial() {
+            return !statuses.isEmpty();
+        }
+    }
 
     // ── AutoCloseable ─────────────────────────────────────────────────────────
 

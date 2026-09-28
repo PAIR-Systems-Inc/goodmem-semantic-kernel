@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.VectorData;
 
 namespace GoodMem.SemanticKernel;
@@ -46,4 +47,12 @@ public sealed class GoodMemOptions
     /// precedence over attribute-based schema discovery on the record type.
     /// </summary>
     public VectorStoreCollectionDefinition? Definition { get; set; }
+
+    /// <summary>
+    /// Where the connector logs. A search the server reported a problem with logs a warning
+    /// naming the statuses, because <c>SearchAsync</c> has no other way to show it.
+    /// When null, warnings are written to standard error; pass
+    /// <c>NullLoggerFactory.Instance</c> to silence them.
+    /// </summary>
+    public ILoggerFactory? LoggerFactory { get; set; }
 }

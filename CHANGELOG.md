@@ -1,5 +1,45 @@
 # Changelog
 
+## Unreleased
+
+No version is bumped: the .NET project file declares none, and Java is already
+on `0.1.1-SNAPSHOT`.
+
+### Fixed — .NET and Java
+
+- **A search the server reported a problem with looked healthy.** Both
+  connectors dropped every `status` event in GoodMem's retrieval stream, so a
+  degraded or failed search had no partial flag, no log line and no
+  exception, and an empty result could not be told from a search that found
+  nothing. Measured on server v1.0.320 with a reranker id that does not exist:
+  the server sent `NOT_FOUND`, `FEATURE_DISABLED` and `RERANKING_FAILED` and
+  fell back to vector scores, and both connectors returned the three hits
+  exactly as for a healthy search; on an empty space they returned an empty
+  result, again exactly as a healthy one. A truncated last line was skipped
+  the same way.
+- They now follow the retrieval status contract, like the Python connector:
+  `FEATURE_DISABLED` and `LLM_CAPABILITY_INFERRED` are ignored by their code
+  alone; any other status marks the search partial; a code the connector does
+  not recognise is reported as `UNKNOWN`, with the server's code kept; the
+  hits the server returned are always kept; and a reported problem never
+  throws, even with no hits. A line that cannot be parsed is reported as
+  `MALFORMED_STREAM`, and the lines after it are still read.
+- New: `GoodMemCollection<TRecord>.SearchWithStatusAsync` (.NET) returns a
+  `GoodMemSearchResults<TRecord>` with `Results`, `Partial` and `Statuses`.
+  `GoodMemCollection.searchWithStatus` (Java) returns a
+  `GoodMemCollection.SearchResults<T>` with `results()`, `partial()` and
+  `statuses()`. Each status is a `GoodMemRetrievalStatus` (code, message,
+  details, original code, unrecognised).
+- `SearchAsync` (.NET), `search` and the plugin's `recall` (Java) have no
+  slot for a flag, so they now log a warning naming the statuses whenever a
+  search was partial. `SearchWithStatusAsync` and `searchWithStatus` log one
+  when a partial search returned nothing. .NET logs through the new
+  `GoodMemOptions.LoggerFactory`, or to standard error when it is not set,
+  and now depends on `Microsoft.Extensions.Logging.Abstractions`. Java logs
+  through `System.Logger`.
+- Scores are unchanged: neither connector sends a reranker, so every hit is a
+  vector score and is still negated into higher-is-better.
+
 ## 0.3.2
 
 Python only. Python goes to 0.3.2. .NET and Java send no reranker, so they
